@@ -103,7 +103,7 @@ impl Workspace {
     fn toggle_shelf(&mut self, cx: &mut Context<Self>) {
         self.shelf_open = !self.shelf_open;
         if self.shelf_open {
-            let fs = self.services.fs.clone();
+            let fs = Arc::clone(&self.services.fs);
             ShelfStore::global(cx).update(cx, |s, cx| s.recheck(fs, cx));
         }
         cx.notify();
@@ -133,8 +133,10 @@ impl Workspace {
     }
 
     /// The Shelf row and, when open, its items and actions.
-    // The row is one element chain (look, drop target, drag source, menu); split up it reads worse.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "The row is one element chain (look, drop target, drag source, menu); split up it reads worse"
+    )]
     pub(super) fn render_shelf(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let held = ShelfStore::global(cx).read(cx).shelf().clone();
         let present: Vec<PathBuf> = held.present();
@@ -286,14 +288,16 @@ impl Workspace {
         self.active_view()
             .update(cx, |e, cx| e.add_dropped_to_shelf(items, cx));
         if unknown {
-            let fs = self.services.fs.clone();
+            let fs = Arc::clone(&self.services.fs);
             ShelfStore::global(cx).update(cx, |s, cx| s.recheck(fs, cx));
         }
         cx.notify();
     }
 
-    // One row's look, drag, menu and remove button, kept together like the tree rows.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "One row's look, drag, menu and remove button, kept together like the tree rows"
+    )]
     fn shelf_item_row(
         ix: usize,
         item: &ShelfItem,

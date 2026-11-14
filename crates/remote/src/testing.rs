@@ -7,7 +7,8 @@
     clippy::expect_used,
     clippy::panic,
     clippy::unused_async_trait_impl,
-    missing_docs
+    missing_docs,
+    reason = "test support: a failure should stop the test; server trait methods are async but do plain file I/O"
 )]
 
 use std::collections::HashMap;
@@ -310,7 +311,7 @@ pub fn serve_sftp(root: PathBuf, seed: u8) -> u16 {
                     root: root.clone(),
                     channels: HashMap::new(),
                 };
-                let config = config.clone();
+                let config = Arc::clone(&config);
                 tokio::spawn(async move {
                     if let Ok(session) = russh::server::run_stream(config, stream, handler).await {
                         let _ = session.await;

@@ -12,6 +12,7 @@
 
 use gpui::{App, Context, SharedString, div, prelude::*, px, svg};
 use rust_i18n::t;
+use std::sync::Arc;
 
 use super::Workspace;
 use super::settings_panel::expander;
@@ -264,7 +265,7 @@ impl Workspace {
     /// Copies the full report to the clipboard, then opens `then_open` (the issue URL) if given.
     fn copy_report(&mut self, then_open: Option<String>, cx: &mut Context<Self>) {
         let settings = SettingsStore::global(cx).read(cx).settings.clone();
-        let shell = self.active_view().read(cx).services.shell.clone();
+        let shell = Arc::clone(&self.active_view().read(cx).services.shell);
         let (shown, with_log, mask) = text_to_send(cx);
         let (tx, rx) = flume::bounded::<Result<String, ReportError>>(1);
         crate::explorer::spawn_thread("report-copy", move || {
@@ -294,7 +295,7 @@ impl Workspace {
     fn save_report(&mut self, cx: &mut Context<Self>) {
         let settings = SettingsStore::global(cx).read(cx).settings.clone();
         let explorer = self.active_view().read(cx);
-        let shell = explorer.services.shell.clone();
+        let shell = Arc::clone(&explorer.services.shell);
         let folder = explorer
             .places
             .iter()
@@ -335,8 +336,10 @@ impl Workspace {
     }
 }
 
-// The card reads top to bottom: what is sent, the options, the exact text, the actions.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "The card reads top to bottom: what is sent, the options, the exact text, the actions"
+)]
 pub(super) fn report_card(open: bool, cx: &mut Context<Workspace>) -> gpui::AnyElement {
     let repo = build_info::RELEASES_REPO;
     let note = cx.try_global::<ReportNote>().cloned().unwrap_or_default().0;

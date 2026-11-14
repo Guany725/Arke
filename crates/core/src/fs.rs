@@ -168,10 +168,10 @@ fn watch_with(
 ) -> io::Result<Box<dyn Send>> {
     let on_event: Arc<WatchCallback> = Arc::new(on_event);
     let target = path.to_path_buf();
-    let events = on_event.clone();
+    let events = Arc::clone(&on_event);
     let guard = crate::watches::registry().watch(
         path,
-        Box::new(move || arm_watcher(&target, mode, events.clone())),
+        Box::new(move || arm_watcher(&target, mode, Arc::clone(&events))),
         Box::new(move || on_event(WatchEvent::Rescan)),
     )?;
     Ok(Box::new(guard))
@@ -216,8 +216,10 @@ fn arm_watcher(
 ) -> io::Result<Box<dyn crate::watches::Armed>> {
     use notify::Watcher;
     let (closed_tx, closed) = std::sync::mpsc::channel();
-    // notify's own API takes a std mutex here.
-    #[allow(clippy::disallowed_types)]
+    #[allow(
+        clippy::disallowed_types,
+        reason = "notify's own API takes a std mutex here"
+    )]
     let handler: Arc<std::sync::Mutex<dyn notify::EventHandler>> = Arc::new(std::sync::Mutex::new(
         move |res: notify::Result<notify::Event>| forward(&on_event, res),
     ));

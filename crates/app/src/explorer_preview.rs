@@ -502,9 +502,10 @@ impl Explorer {
 
     /// Called on every render: when the preview is open and the cursor moved to another item,
     /// schedule a read.
-    // One pass over what can happen on a frame (same PDF resized, cache hit, cloud, load); split
-    // up, the order of the checks would be harder to follow.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "One pass over what can happen on a frame (same PDF resized, cache hit, cloud, load); split up, the order of the checks would be harder to follow"
+    )]
     pub(super) fn sync_preview(&mut self, cx: &mut Context<Self>) {
         if !(self.quick_look || self.preview_shown() || self.hosts_shared_preview()) {
             return;
@@ -592,8 +593,8 @@ impl Explorer {
             });
         })
         .detach();
-        let fs = self.services.fs.clone();
-        let shell = self.services.shell.clone();
+        let fs = Arc::clone(&self.services.fs);
+        let shell = Arc::clone(&self.services.shell);
         let tx = self.events_tx.clone();
         self.preview_task = Some(cx.spawn(async move |this, cx| {
             if !PREVIEW_DELAY.is_zero() {
@@ -775,7 +776,6 @@ impl Explorer {
             let w = self.pane_frame_w();
             gpui::size(w, self.pdf_frame_h(w))
         };
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let device = |v: Pixels| (f32::from(v) * scale).round().max(1.) as u32;
         (device(area.width), device(area.height))
     }
@@ -851,7 +851,7 @@ impl Explorer {
         }
         view.pending = Some((page, target));
         let path = preview.path.clone();
-        let shell = self.services.shell.clone();
+        let shell = Arc::clone(&self.services.shell);
         let tx = self.events_tx.clone();
         spawn_thread("pdf-page", move || {
             let data = load_pdf(shell.as_ref(), &path, page, target);
@@ -938,7 +938,7 @@ impl Explorer {
                     .overflow_hidden()
                     .when(raised, |d| d.shadow(theme::elev_float()))
                     .when(!raised, |d| d.border_1().border_color(theme::line()))
-                    .child(img(render.image.clone()).size_full()),
+                    .child(img(Arc::clone(&render.image)).size_full()),
             )
             .into_any_element()
     }
@@ -1029,7 +1029,7 @@ impl Explorer {
             .relative()
             .size_full()
             .child(body)
-            .child(crate::scrollbar::scrollbar(scroll.clone(), drag.clone()))
+            .child(crate::scrollbar::scrollbar(scroll.clone(), Rc::clone(drag)))
             .into_any_element()
     }
 
@@ -1037,13 +1037,13 @@ impl Explorer {
         match &preview.body {
             // Give the element the frame's aspect ratio; otherwise GPUI sizes by the image's own
             // ratio and portrait photos overflow.
-            PreviewBody::Image { image, .. } => img(image.clone())
+            PreviewBody::Image { image, .. } => img(Arc::clone(image))
                 .size_full()
                 .aspect_ratio(PANE_IMAGE_RATIO)
                 .object_fit(ObjectFit::Contain)
                 .rounded(theme::R_8)
                 .into_any_element(),
-            PreviewBody::Pdf(view) => img(view.render.image.clone())
+            PreviewBody::Pdf(view) => img(Arc::clone(&view.render.image))
                 .size_full()
                 .object_fit(ObjectFit::Contain)
                 .into_any_element(),
@@ -1146,19 +1146,19 @@ impl Explorer {
                             .flex_1()
                             .min_w_0()
                             .truncate()
-                            .child(SharedString::from(entry.name.clone())),
+                            .child(SharedString::from(Arc::clone(&entry.name))),
                     );
                 match cx.as_deref_mut() {
                     Some(cx) => {
                         let dir = dir.to_path_buf();
-                        let name = entry.name.clone();
+                        let name = Arc::clone(&entry.name);
                         row.cursor_pointer()
                             .hover(|s| s.bg(theme::wash()))
                             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                 this.navigate_selecting(
                                     dir.clone(),
                                     arke_core::NavKind::New,
-                                    Some(name.clone()),
+                                    Some(Arc::clone(&name)),
                                     cx,
                                 );
                             }))
@@ -1459,9 +1459,10 @@ impl Explorer {
 
     /// What the side preview shows in `pane` (from [`Self::preview_frame`]): the item, a
     /// summary of a multiple selection, or a note that nothing is selected.
-    // Layouts for each kind (no selection, archive, folder, other) are kept together for easy
-    // comparison.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Layouts for each kind (no selection, archive, folder, other) are kept together for easy comparison"
+    )]
     pub(super) fn preview_column(&self, pane: gpui::Div, cx: &mut Context<Self>) -> AnyElement {
         // Several selected: previewing the cursor item means little, show a summary instead.
         if self.selection.len() > 1 && !self.search_mode {
@@ -1528,8 +1529,10 @@ impl Explorer {
                         .child(tn!("info.items", *total).into_owned()),
                 )
                 .child({
-                    let (scroll, drag) =
-                        (self.preview_scroll.clone(), self.preview_scrollbar.clone());
+                    let (scroll, drag) = (
+                        self.preview_scroll.clone(),
+                        Rc::clone(&self.preview_scrollbar),
+                    );
                     let list = Self::folder_list(&preview.path, entries, *total, &scroll, Some(cx));
                     div()
                         .flex_1()
@@ -2233,7 +2236,6 @@ const KINDS_SHOWN: usize = 6;
 
 /// Fit-to-window rect of the image within the image area (centered, aspect kept).
 fn fit_rect(view: Bounds<Pixels>, width: u32, height: u32) -> Bounds<Pixels> {
-    #[allow(clippy::cast_precision_loss)]
     let aspect = width as f32 / height.max(1) as f32;
     let (vw, vh) = (view.size.width, view.size.height);
     let fw = vw.min(vh * aspect);
@@ -2248,7 +2250,6 @@ fn fit_rect(view: Bounds<Pixels>, width: u32, height: u32) -> Bounds<Pixels> {
 }
 
 /// Image size at 100% (logical pixels).
-#[allow(clippy::cast_precision_loss)]
 fn actual_size(width: u32, height: u32, scale: f32) -> gpui::Size<Pixels> {
     gpui::size(px(width as f32 / scale), px(height as f32 / scale))
 }
@@ -2409,7 +2410,7 @@ impl Explorer {
         if self.zoom.full.is_none() && width.max(height) > IMAGE_SIDE {
             self.zoom.generation += 1;
             let generation = self.zoom.generation;
-            let fs = self.services.fs.clone();
+            let fs = Arc::clone(&self.services.fs);
             let tx = self.events_tx.clone();
             spawn_thread("zoom-image", move || {
                 let image = fs
@@ -2459,8 +2460,10 @@ impl Explorer {
     /// Quick Look body: images fill the stage and zoom with the wheel, toggle actual size on click
     /// and pan by drag; PDF pages sit on the stage with a page control; text reads like an editor;
     /// items without a preview get a large icon and an Open button.
-    // The image's mouse handling is one chain; the other kinds return early above it.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "The image's mouse handling is one chain; the other kinds return early above it"
+    )]
     fn quick_look_body(
         &self,
         preview: &Preview,
@@ -2589,13 +2592,13 @@ impl Explorer {
                     .into_any_element();
             }
         };
-        let view = self.zoom.view.clone();
+        let view = Rc::clone(&self.zoom.view);
         let capture = canvas(move |bounds, _, _| view.set(bounds), |_, (), _, _| {})
             .absolute()
             .size_full();
         let picture = if self.zoom.on {
             let content = self.zoomed_size(width, height, window.scale_factor());
-            let source = self.zoom.full.clone().unwrap_or_else(|| image.clone());
+            let source = self.zoom.full.clone().unwrap_or_else(|| Arc::clone(image));
             img(source)
                 .absolute()
                 .left(self.zoom.pan.x)
@@ -2608,7 +2611,7 @@ impl Explorer {
             // portrait photos.
             let area = Bounds::new(Point::default(), self.look_area());
             let fit = shown_rect(area, width, height, window.scale_factor());
-            img(image.clone())
+            img(Arc::clone(image))
                 .absolute()
                 .left(fit.origin.x)
                 .top(fit.origin.y)
@@ -2914,7 +2917,6 @@ mod zoom_tests {
 /// first row. `large` (Quick Look) fills the stage like an editor: a ruled gutter, roomier lines.
 fn code_view(lines: &Arc<Vec<CodeLine>>, large: bool, scroll: &gpui::ScrollHandle) -> AnyElement {
     let digits = lines.len().max(1).to_string().len();
-    #[allow(clippy::cast_precision_loss)]
     let numbers = px(8. * digits as f32 + 8.);
     let rows: Vec<AnyElement> = lines
         .iter()

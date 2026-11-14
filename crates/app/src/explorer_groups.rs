@@ -371,11 +371,11 @@ impl Explorer {
             .as_ref()
             .filter(|g| g.key == key)
         {
-            return Some(cached.clone());
+            return Some(Rc::clone(cached));
         }
         let (rows, _) = build(&view, self.sort.column, folders_apart, today);
         let grid = Rc::new(GridGroups::new(key, &rows, cols));
-        *self.group_cache.1.borrow_mut() = Some(grid.clone());
+        *self.group_cache.1.borrow_mut() = Some(Rc::clone(&grid));
         Some(grid)
     }
 
@@ -416,7 +416,6 @@ impl Explorer {
                 Some(Slot::Row(r, k)) if wanted.peek() == Some(&(*r, *k)) => {
                     wanted.next();
                     let row = tiles.next().unwrap_or_else(|| div().into_any_element());
-                    #[allow(clippy::cast_precision_loss)]
                     let up = slot_h * *k as f32;
                     div()
                         .h(slot_h)
@@ -459,11 +458,11 @@ impl Explorer {
             .as_ref()
             .filter(|g| g.key == key)
         {
-            return Some(cached.clone());
+            return Some(Rc::clone(cached));
         }
         let (rows, row_of) = build(&view, self.sort.column, folders_apart, today);
         let groups = Rc::new(Groups { key, rows, row_of });
-        *self.group_cache.0.borrow_mut() = Some(groups.clone());
+        *self.group_cache.0.borrow_mut() = Some(Rc::clone(&groups));
         Some(groups)
     }
 
@@ -589,10 +588,10 @@ impl Explorer {
                     Vec::new()
                 };
                 let end = (start + count).min(view.len());
-                names.extend(view[start.min(end)..end].iter().map(|e| e.name.clone()));
+                names.extend(view[start.min(end)..end].iter().map(|e| Arc::clone(&e.name)));
                 this.selection.select_names(names);
                 this.selection
-                    .set_cursor_name(view.get(start).map(|e| e.name.clone()));
+                    .set_cursor_name(view.get(start).map(|e| Arc::clone(&e.name)));
                 this.cursor = Some(start);
                 cx.notify();
             }))

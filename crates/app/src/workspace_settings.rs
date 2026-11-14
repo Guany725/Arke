@@ -13,6 +13,8 @@
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::rc::Rc;
+use std::sync::Arc;
 
 use gpui::{
     Animation, AnimationExt, AnyElement, App, ClickEvent, Context, Entity, FocusHandle, Focusable,
@@ -277,7 +279,7 @@ impl Workspace {
         let app_input = cx.new(|cx| TextInput::new(t!("openwith.placeholder").to_string(), cx));
         let app_sub = cx.subscribe_in(&app_input, window, Self::on_app_input);
         // List fonts in the background; there can be hundreds.
-        let text_system = cx.text_system().clone();
+        let text_system = Arc::clone(cx.text_system());
         cx.spawn(async move |this, cx| {
             let names = cx
                 .background_executor()
@@ -352,7 +354,7 @@ impl Workspace {
             image: None,
             failed: false,
         });
-        let fs = self.services.fs.clone();
+        let fs = Arc::clone(&self.services.fs);
         let (tx, rx) = flume::bounded(1);
         let source = path.clone();
         crate::explorer::spawn_thread("backdrop-thumb", move || {
@@ -410,7 +412,7 @@ impl Workspace {
             })
             .map(|p| p.path.clone());
         let request = what.request(&settings, downloads);
-        let shell = self.services.shell.clone();
+        let shell = Arc::clone(&self.services.shell);
         let owner = crate::explorer::Explorer::owner_from(window);
         let (tx, rx) = flume::bounded(1);
         crate::explorer::spawn_thread("pick-file", move || {
@@ -700,8 +702,10 @@ impl Workspace {
     }
 
     /// Settings page for the content area, or `None` when closed.
-    // The whole page layout (categories, content, scrollbar) is kept together so the structure is visible.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "The whole page layout (categories, content, scrollbar) is kept together so the structure is visible"
+    )]
     pub(super) fn render_settings_page(
         &self,
         window: &Window,
@@ -873,7 +877,7 @@ impl Workspace {
                         )
                         .child(crate::scrollbar::scrollbar(
                             page.scroll.clone(),
-                            page.scrollbar_drag.clone(),
+                            Rc::clone(&page.scrollbar_drag),
                         ))
                         .children(self.render_uninstall_dialog(cx)),
                 )
@@ -932,7 +936,10 @@ impl Workspace {
     }
 
     /// Each category (name, icon) and its cards.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each category and its cards, in the order shown"
+    )]
     fn settings_sections(
         s: &Settings,
         page: &SettingsPage,
@@ -1498,7 +1505,7 @@ impl Workspace {
         let Some(path) = crate::settings::default_path() else {
             return;
         };
-        let shell = self.active_view().read(cx).services.shell.clone();
+        let shell = Arc::clone(&self.active_view().read(cx).services.shell);
         crate::explorer::spawn_thread("reveal-settings", move || {
             let _ = shell.reveal_in_explorer(&path, true);
         });
@@ -1819,8 +1826,10 @@ pub(super) fn choice<T: Copy + PartialEq + 'static>(
 
 /// [`choice`] where picking runs `pick` (not necessarily a setting), and `fonts` optionally gives
 /// each option's label its own font.
-// Button, list and outside layer are parts of one control; splitting them makes it harder to read.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Button, list and outside layer are parts of one control; splitting them makes it harder to read"
+)]
 pub(super) fn choice_with<T: Copy + PartialEq + 'static>(
     id: &'static str,
     options: &[(T, Cow<'static, str>)],
@@ -2053,7 +2062,10 @@ pub(super) fn choice_with<T: Copy + PartialEq + 'static>(
 
 /// Expandable card. The whole header (icon, name, description, current value, chevron) is clickable;
 /// options appear below when expanded.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "an expander takes its title, state and body parts"
+)]
 pub(super) fn expander(
     id: &'static str,
     icon: Icon,
@@ -2608,7 +2620,7 @@ fn font_card(s: &Settings, fonts: &std::rc::Rc<Vec<SharedString>>, ui: &Ui) -> A
             .collect(),
     );
     let font_of: OptionFont = {
-        let names = names.clone();
+        let names = Rc::clone(&names);
         std::rc::Rc::new(move |ix: usize| names.get(ix).cloned())
     };
     // Live sample under the name, in the chosen font.
@@ -2618,7 +2630,7 @@ fn font_card(s: &Settings, fonts: &std::rc::Rc<Vec<SharedString>>, ui: &Ui) -> A
         .when_some(names.get(current).cloned(), gpui::Styled::font_family)
         .child(t!("settings.font_sample").into_owned())
         .into_any_element();
-    let fonts = fonts.clone();
+    let fonts = Rc::clone(fonts);
     row(
         Icon::Font,
         t!("settings.font").into_owned().into(),
@@ -2628,7 +2640,7 @@ fn font_card(s: &Settings, fonts: &std::rc::Rc<Vec<SharedString>>, ui: &Ui) -> A
             &options,
             current,
             move |ix: usize, cx| {
-                let fonts = fonts.clone();
+                let fonts = Rc::clone(&fonts);
                 set(cx, move |st| {
                     if ix == 0 {
                         st.font.clear();
@@ -2689,8 +2701,10 @@ fn background_summary(s: &Settings, page: &SettingsPage) -> AnyElement {
 /// Background image: thumbnail of the chosen file with Browse and Clear (or paste a path and
 /// press Enter), then opacity with a live preview of the file list paper. Can also be set from an
 /// image's context menu.
-// The card's two parts (choosing the image, then how strongly it shows) are kept together.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "The card's two parts (choosing the image, then how strongly it shows) are kept together"
+)]
 fn background_body(
     s: &Settings,
     page: &SettingsPage,
@@ -2743,7 +2757,7 @@ fn background_body(
             Icon::Image,
             Some(t!("settings.background_none").into_owned()),
         ),
-        (true, Some(image), _) => gpui::img(image.clone())
+        (true, Some(image), _) => gpui::img(Arc::clone(image))
             .size_full()
             .object_fit(gpui::ObjectFit::Cover)
             .into_any_element(),
@@ -2892,7 +2906,7 @@ fn background_body(
                         .flex()
                         .items_center()
                         .gap(theme::S_12)
-                        .child(opacity_slider(opacity, page.slider_drag.clone()))
+                        .child(opacity_slider(opacity, Rc::clone(&page.slider_drag)))
                         .child(
                             div()
                                 .w(px(40.))
@@ -2924,7 +2938,6 @@ fn opacity_slider(value: u8, dragging: std::rc::Rc<std::cell::Cell<bool>>) -> An
         f32::from(value.min(100)) / 100.,
         dragging,
         // 0 to 1 in, 0 to 100 out: the cast can't truncate.
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         std::rc::Rc::new(|fraction: f32, _: &mut Window, cx: &mut App| {
             set_backdrop_opacity((fraction * 100.).round() as u8, cx);
         }),
@@ -3549,7 +3562,7 @@ fn network_row(
         .hover(|s| s.bg(theme::wash()))
         .child(action)
         .on_click(move |_: &ClickEvent, _, cx: &mut App| {
-            let apply = apply.clone();
+            let apply = Rc::clone(&apply);
             set(cx, move |st| apply(st));
         });
     div()
@@ -3601,8 +3614,10 @@ fn journal_choice(current_mb: u64) -> u64 {
 /// Advanced: the change journal's max size per local disk (queried from the disk), which can be
 /// raised (UAC prompt). A larger journal lets Arke catch up after being closed longer without a
 /// full reindex, at the cost of disk space. Collapsed by default.
-// One card: a row per disk with its size dropdown, kept together for easier comparison.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "One card: a row per disk with its size dropdown, kept together for easier comparison"
+)]
 fn journal_card(
     roots: Vec<PathBuf>,
     open: bool,

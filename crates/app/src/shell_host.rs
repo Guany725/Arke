@@ -315,7 +315,7 @@ fn spawn_host() -> Result<Host, SpawnError> {
             }
         })
         .and_then(|_| {
-            let pending = pending.clone();
+            let pending = Arc::clone(&pending);
             std::thread::Builder::new()
                 .name("shell-host-read".into())
                 .spawn(move || {
@@ -394,7 +394,9 @@ fn submit(
         .insert(id, done);
     let mut line = serde_json::to_string(&make(id)).map_err(ShellError::Encode)?;
     line.push('\n');
-    host.tx.send(line).map_err(|_| ShellError::HostGone)?;
+    host.tx
+        .send(line)
+        .map_err(|_hung_up| ShellError::HostGone)?;
     Ok(wait)
 }
 

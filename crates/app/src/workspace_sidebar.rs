@@ -4,6 +4,7 @@
 //! The context menu is the sidebar's own small menu (open in new tab, pin, favorites, ...).
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use arke_core::filetype::FileKind;
 use gpui::{
@@ -871,7 +872,10 @@ impl Workspace {
             }))
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a tile needs its place, label, icon and state"
+    )]
     fn render_tile(
         ix: usize,
         path: &Path,
@@ -994,7 +998,6 @@ impl Workspace {
         };
         // Drives get free space on the right and a thin usage bar under the label.
         let space = space.filter(|&(_, total)| total > 0).map(|(free, total)| {
-            #[allow(clippy::cast_precision_loss)]
             let used = 1. - free as f32 / total as f32;
             DriveSpace {
                 free: arke_core::format::format_size(free),
@@ -1014,7 +1017,10 @@ impl Workspace {
     }
 
     /// An expandable folder; renders subfolders recursively when open.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a tree row needs its place, depth and state"
+    )]
     fn render_tree(
         &self,
         path: &Path,
@@ -1040,7 +1046,6 @@ impl Workspace {
         let open = path.to_path_buf();
         let tab_path = path.to_path_buf();
         let menu = self.tree_menu(path, depth, cx);
-        #[allow(clippy::cast_precision_loss)]
         let indent = INDENT * depth as f32;
         out.push(
             div()
@@ -1189,8 +1194,8 @@ impl Workspace {
         self.expanded.insert(path.clone());
         // Relist on every expand since the folder may have changed; show the old result meanwhile.
         self.tree_children.entry(path.clone()).or_insert(None);
-        let fs = self.services.fs.clone();
-        let shell = self.services.shell.clone();
+        let fs = Arc::clone(&self.services.fs);
+        let shell = Arc::clone(&self.services.shell);
         let (tx, rx) = flume::bounded::<(Vec<PathBuf>, Vec<PathBuf>)>(1);
         let dir = path.clone();
         let spawned = std::thread::Builder::new()
@@ -1273,7 +1278,7 @@ impl Workspace {
             .filter_map(|p| arke_core::remote::RemoteUrl::from_path(&p.url))
             .any(|u| u.same_origin(&gone));
         if !still_used {
-            let remotes = self.services.remotes.clone();
+            let remotes = Arc::clone(&self.services.remotes);
             crate::explorer::spawn_thread("remote-forget", move || remotes.forget(&gone));
         }
     }
@@ -1410,7 +1415,7 @@ impl Workspace {
     /// then asks Windows to eject. Reports who holds the drive if it is in use.
     fn eject_drive(&mut self, drive: PathBuf, cx: &mut Context<Self>) {
         self.leave_drive(&drive, cx);
-        let shell = self.active_view().read(cx).services.shell.clone();
+        let shell = Arc::clone(&self.active_view().read(cx).services.shell);
         let view = self.active_view().clone();
         let (tx, rx) = flume::bounded(1);
         let target = drive.clone();
@@ -1447,7 +1452,7 @@ impl Workspace {
     }
 
     fn disconnect_drive(&mut self, drive: PathBuf, cx: &mut Context<Self>) {
-        let shell = self.active_view().read(cx).services.shell.clone();
+        let shell = Arc::clone(&self.active_view().read(cx).services.shell);
         let view = self.active_view().clone();
         let (tx, rx) = flume::bounded(1);
         let target = drive.clone();
@@ -1488,7 +1493,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let shell = self.active_view().read(cx).services.shell.clone();
+        let shell = Arc::clone(&self.active_view().read(cx).services.shell);
         let owner = Explorer::owner_from(window);
         let (tx, rx) = flume::bounded(1);
         crate::explorer::spawn_thread("net-drive-dialog", move || {
@@ -1763,7 +1768,10 @@ impl Workspace {
     }
 
     /// One tab. `horizontal` uses the top tab strip style (wider, joined to the paper at the bottom).
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one tab's look, drag and menu together"
+    )]
     pub(super) fn render_tab(&self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
         let tab: &Tab = &self.tabs[ix];
         let active = ix == self.active;

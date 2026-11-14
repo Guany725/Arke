@@ -356,7 +356,7 @@ impl NetDialog {
         self.busy = true;
         self.error = None;
         cx.notify();
-        let shell = self.shell.clone();
+        let shell = Arc::clone(&self.shell);
         let (tx, rx) = flume::bounded(1);
         crate::explorer::spawn_thread("net-connect", move || {
             let _ = tx.send(shell.net_connect(&request));
@@ -426,7 +426,7 @@ impl NetDialog {
         self.busy = true;
         self.error = None;
         cx.notify();
-        let remotes = self.remotes.clone();
+        let remotes = Arc::clone(&self.remotes);
         let (tx, rx) = flume::bounded(1);
         let target = url.clone();
         let key = key_file.clone();
@@ -872,7 +872,10 @@ impl NetDialog {
 }
 
 impl Render for NetDialog {
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the dialog's element tree reads top to bottom"
+    )]
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (title, intro, ok) = self.texts();
         let is_map = matches!(self.kind, NetDialogKind::Map { .. });

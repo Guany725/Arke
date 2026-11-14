@@ -307,8 +307,13 @@ impl Journal for ServiceJournal {
             })?;
         let mut timeout = LIST_FIRST_TIMEOUT;
         loop {
-            let reply = rx.recv_timeout(timeout).map_err(|_| {
-                io::Error::new(io::ErrorKind::TimedOut, "index service timed out")
+            let reply = rx.recv_timeout(timeout).map_err(|e| match e {
+                flume::RecvTimeoutError::Timeout => {
+                    io::Error::new(io::ErrorKind::TimedOut, "index service timed out")
+                }
+                flume::RecvTimeoutError::Disconnected => {
+                    io::Error::new(io::ErrorKind::BrokenPipe, "index service connection closed")
+                }
             })??;
             timeout = LIST_NEXT_TIMEOUT;
             match reply {
@@ -344,7 +349,7 @@ impl Journal for ServiceJournal {
             pipe,
             stopped: AtomicBool::new(false),
         });
-        let reader = follow.clone();
+        let reader = Arc::clone(&follow);
         std::thread::Builder::new()
             .name("arke-indexd-follow".into())
             .spawn(move || {

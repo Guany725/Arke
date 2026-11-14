@@ -20,7 +20,16 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 // Tests may unwrap and panic.
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::unwrap_in_result,
+        clippy::panic,
+        reason = "a failing test should stop right there"
+    )
+)]
 
 // First, so the `tn!` macro is visible in every module below.
 #[macro_use]
@@ -121,8 +130,10 @@ enum BenchArg {
     Index,
 }
 
-// One bool per command line flag.
-#[allow(clippy::struct_excessive_bools)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "One bool per command line flag"
+)]
 struct Args {
     path: Option<PathBuf>,
     bench: Option<BenchArg>,
@@ -283,9 +294,10 @@ fn main() -> std::process::ExitCode {
     std::process::ExitCode::SUCCESS
 }
 
-// Startup order (args, handoff to the resident process, window, settings-driven pieces) reads best
-// top to bottom in one place.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Startup order (args, handoff to the resident process, window, settings-driven pieces) reads best top to bottom in one place"
+)]
 fn app_main(mut args: Args) {
     if run_shell_host() {
         return;
@@ -441,17 +453,17 @@ fn app_main(mut args: Args) {
         let services = Services {
             fs: Arc::new(arke_remote::RoutingFs::new(
                 Arc::new(RealFs),
-                remotes.clone(),
+                Arc::clone(&remotes),
             )),
             shell: Arc::new(remote_shell::RemoteShell::new(
                 Arc::new(WinShell),
-                remotes.clone(),
+                Arc::clone(&remotes),
             )),
             remotes,
         };
         // "Open in VS Code/Zed": check in the background whether they're installed.
         if bench.is_none() {
-            let shell = services.shell.clone();
+            let shell = Arc::clone(&services.shell);
             explorer::spawn_thread("editor-apps", move || {
                 let apps = shell.editor_apps();
                 // Icons come from each exe (icon only, no thumbnail provider).
@@ -486,8 +498,8 @@ fn app_main(mut args: Args) {
         // Global search: index only when enabled; not during benchmarks.
         if bench.is_none() {
             global_search::GlobalSearch::init(
-                services.fs.clone(),
-                services.shell.clone(),
+                Arc::clone(&services.fs),
+                Arc::clone(&services.shell),
                 global_search::Roots::LocalDrives,
                 global_search::default_cache_path(),
                 cx,
@@ -557,7 +569,7 @@ fn follow_autostart_setting(
     services: &Services,
     cx: &mut App,
 ) {
-    let shell = services.shell.clone();
+    let shell = Arc::clone(&services.shell);
     let mut applied: Option<bool> = None;
     cx.observe(store, move |store, cx| {
         let store = store.read(cx);
@@ -575,7 +587,7 @@ fn follow_autostart_setting(
         if first && !wanted {
             return;
         }
-        let shell = shell.clone();
+        let shell = Arc::clone(&shell);
         explorer::spawn_thread("autostart", move || {
             if let Err(err) = shell.set_autostart(wanted) {
                 log::warn!("autostart shortcut not updated: {err}");
@@ -597,7 +609,7 @@ fn follow_start_menu_setting(
     if update::installed_by_setup() {
         return;
     }
-    let shell = services.shell.clone();
+    let shell = Arc::clone(&services.shell);
     let mut applied: Option<bool> = None;
     let mut apply = move |store: &settings::SettingsStore| {
         if !store.loaded {
@@ -612,7 +624,7 @@ fn follow_start_menu_setting(
         if first && !wanted {
             return;
         }
-        let shell = shell.clone();
+        let shell = Arc::clone(&shell);
         explorer::spawn_thread("start-menu", move || {
             if let Err(err) = shell.set_start_menu(wanted) {
                 log::warn!("Start menu shortcut not updated: {err}");
@@ -697,7 +709,7 @@ fn follow_win_e_hook(
     let hook: Rc<RefCell<Option<win_e_hook::Hook>>> = Rc::default();
     let direct_launch = Rc::new(Cell::new(false));
     let apply = {
-        let direct_launch = direct_launch.clone();
+        let direct_launch = Rc::clone(&direct_launch);
         move |store: &settings::SettingsStore| {
             // Before settings load the values are defaults.
             if !store.loaded {
@@ -718,7 +730,7 @@ fn follow_win_e_hook(
     };
     let apply = Rc::new(apply);
     {
-        let apply = apply.clone();
+        let apply = Rc::clone(&apply);
         cx.observe(store, move |store, cx| apply(store.read(cx)))
             .detach();
     }

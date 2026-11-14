@@ -134,16 +134,13 @@ impl Explorer {
             let row = |y: Pixels| ((y - top) / tile.h).floor();
             let col = |x: Pixels| ((x - left) / tile.w).floor();
             let (r0, r1) = (row(y0).max(0.), row(y1));
-            #[allow(clippy::cast_precision_loss)]
             let (c0, c1) = (col(x0).max(0.), col(x1).min((cols - 1) as f32));
             // Grouped grid works per cell: find the cell rows that overlap the box.
             if let Some(groups) = self.grid_groups() {
                 let slot_h = tile.h / super::groups::TILE_SLOTS as f32;
                 let slot = |y: Pixels| ((y - top) / slot_h).floor().max(0.);
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                 let (s0, s1) = (slot(y0) as usize, slot(y1) as usize);
                 if c1 >= c0 {
-                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                     let (c0, c1) = (c0 as usize, c1 as usize);
                     for range in groups.rows_in_slots(s0, s1) {
                         hits.extend(
@@ -152,7 +149,6 @@ impl Explorer {
                     }
                 }
             } else if r1 >= r0 && c1 >= c0 {
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                 for r in (r0 as usize)..=(r1 as usize) {
                     for c in (c0 as usize)..=(c1 as usize) {
                         let ix = r * cols + c;
@@ -171,7 +167,6 @@ impl Explorer {
             let overlaps = x1 >= left && self.cols.is_none_or(|c| x0 <= left + c.row);
             if overlaps && r1 >= r0 {
                 // Grouped rows include headers: map to items and skip the headers.
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                 let rows = r0 as usize..=r1 as usize;
                 hits.extend(
                     rows.filter_map(|row| self.item_at_row(row))
@@ -184,12 +179,12 @@ impl Explorer {
         self.selection.select_names(base);
         self.selection.select_names(
             hits.iter()
-                .filter_map(|&ix| view.get(ix).map(|e| e.name.clone())),
+                .filter_map(|&ix| view.get(ix).map(|e| Arc::clone(&e.name))),
         );
         if let Some(&last) = hits.last() {
             self.cursor = Some(last);
             self.selection
-                .set_cursor_name(view.get(last).map(|e| e.name.clone()));
+                .set_cursor_name(view.get(last).map(|e| Arc::clone(&e.name)));
         }
     }
 
@@ -228,7 +223,7 @@ impl Explorer {
 
     /// Marquee layer over the list: measures the list, registers drag events, draws the box.
     pub(super) fn render_marquee(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let bounds = self.list_bounds.clone();
+        let bounds = Rc::clone(&self.list_bounds);
         let active = self.marquee.is_some();
         let follow = self.header_follow();
         let this = cx.entity();

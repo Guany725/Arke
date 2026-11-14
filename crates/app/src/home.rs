@@ -196,7 +196,7 @@ impl HomePage {
 
     /// Reload recent files (when the home page opens or Arke regains focus).
     pub(crate) fn reload(&mut self, cx: &mut Context<Self>) {
-        let shell = self.shell.clone();
+        let shell = Arc::clone(&self.shell);
         let (tx, rx) = flume::bounded::<Vec<RecentFile>>(1);
         spawn_thread("home-recent", move || {
             let _ = tx.send(shell.recent_files(RECENT_MAX));
@@ -228,7 +228,7 @@ impl HomePage {
 
     fn open_file(&self, path: PathBuf, cx: &mut App) {
         crate::search_history::SearchHistory::record(&path, false, cx);
-        let shell = self.shell.clone();
+        let shell = Arc::clone(&self.shell);
         spawn_thread("home-open", move || {
             if let Err(err) = shell.open(&path) {
                 log::info!("home cannot open {}: {err}", path.display());
@@ -259,8 +259,10 @@ impl HomePage {
     }
 
     /// Recent files: icon, name over a short folder, how long ago, and a reveal button on hover.
-    // Row layout kept together for easy comparison.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Row layout kept together for easy comparison"
+    )]
     fn render_recent(&self, cx: &mut Context<Self>) -> AnyElement {
         let note = |text: String| {
             div()
@@ -532,8 +534,10 @@ impl HomePage {
 }
 
 impl Render for HomePage {
-    // Sections in reading order: title, quick access, drives, network, recent.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Sections in reading order: title, quick access, drives, network, recent"
+    )]
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let known: Vec<Place> = QUICK_FOLDERS
             .iter()

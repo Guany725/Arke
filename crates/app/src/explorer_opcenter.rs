@@ -2,6 +2,7 @@
 //! just finished, opening a list. State lives in `op_center.rs` (global, shared by all tabs); this
 //! only draws.
 
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -74,7 +75,7 @@ impl Explorer {
                 state: job.state.clone(),
                 fraction: job.fraction(),
                 stopping: job.progress.cancel.load(Ordering::Relaxed),
-                progress: job.progress.clone(),
+                progress: Arc::clone(&job.progress),
                 undo: job
                     .undo
                     .filter(|id| crate::explorer::UndoHistory::has(cx, *id)),
@@ -90,7 +91,6 @@ impl Explorer {
             .filter(|row| row.state == JobState::Running)
             .collect();
         // Several running: ring shows the average; any unknown total makes it spin.
-        #[allow(clippy::cast_precision_loss)]
         let overall = running
             .iter()
             .map(|row| row.fraction)
@@ -110,7 +110,7 @@ impl Explorer {
             .rev()
             .filter(|job| job.running())
             .find_map(crate::op_center::Job::speed_text);
-        let ring_shown = self.ring_shown.clone();
+        let ring_shown = Rc::clone(&self.ring_shown);
         let button = button(busy, overall, unseen, open, tip, speed, ring_shown, cx);
         if !open {
             return Some(button.into_any_element());
@@ -162,7 +162,10 @@ impl Explorer {
 
 /// Top bar button: a ring while running, a check when done, and a dot if something finished while
 /// the list was closed.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the button shows each part of the progress state"
+)]
 fn button(
     busy: bool,
     overall: Option<f32>,
@@ -391,7 +394,7 @@ fn job_row(row: Row, cx: &mut Context<Explorer>) -> AnyElement {
 
 /// "Cancel" on a running (or queued) row.
 fn cancel_button(row: &Row, cx: &mut Context<Explorer>) -> AnyElement {
-    let progress = row.progress.clone();
+    let progress = Arc::clone(&row.progress);
     div()
         .id(("op-center-cancel", usize::try_from(row.id).unwrap_or(0)))
         .a11y_button(t!("toast.cancel"))
@@ -539,7 +542,6 @@ fn ring(fraction: Option<f32>, shown: std::rc::Rc<std::cell::Cell<f32>>) -> impl
                 let ms = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_or(0, |d| d.as_millis());
-                #[allow(clippy::cast_precision_loss)]
                 let turn = (ms % SPINNER_PERIOD_MS) as f32 / SPINNER_PERIOD_MS as f32;
                 (turn, SPINNER_SWEEP)
             };
@@ -558,11 +560,9 @@ fn arc(
     start: f32,
     sweep: f32,
 ) -> Option<gpui::Path<Pixels>> {
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let steps = ((sweep * 48.).ceil() as usize).max(2);
     let mut builder = PathBuilder::stroke(px(2.));
     for step in 0..=steps {
-        #[allow(clippy::cast_precision_loss)]
         let turn = start + sweep * step as f32 / steps as f32;
         let angle = turn * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
         let at = point(
