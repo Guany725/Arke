@@ -29,8 +29,8 @@ use crate::assets::Icon;
 use crate::explorer::ViewMode;
 use crate::scrollbar::ScrollbarDrag;
 use crate::settings::{
-    Accent, Density, FolderOrder, Language, Material, NavScope, Settings, SettingsStore, SortBy,
-    StartLocation, TabLayout, ThemeMode, Tint,
+    Accent, DarkShade, Density, FolderOrder, Language, Material, NavScope, Settings, SettingsStore,
+    SortBy, StartLocation, TabLayout, ThemeMode, Tint,
 };
 use crate::text_input::{InputEvent, TextInput};
 use crate::theme;
@@ -976,7 +976,7 @@ impl Workspace {
             Icon::Theme,
             t!("settings.theme"),
             t!("settings.theme_desc"),
-            text_summary(theme_label(s.theme)),
+            text_summary(theme_label(s.theme, s.dark_shade)),
             page.expanded.contains("theme"),
             theme_body(s),
             cx,
@@ -2200,8 +2200,8 @@ impl TileLook {
     }
 
     /// The light or dark theme, whatever the current one is.
-    fn mode(dark: bool) -> Self {
-        let look = theme::mode_preview(dark);
+    fn mode(dark: bool, gray: bool) -> Self {
+        let look = theme::mode_preview(dark, gray);
         Self {
             frame: look.frame,
             paper: look.paper,
@@ -2358,7 +2358,7 @@ fn tile(
 /// Theme options: light, dark, and follow Windows (half light, half dark).
 fn theme_body(s: &Settings) -> AnyElement {
     let (width, height) = THEME_TILE;
-    let window = |dark: bool| mini_window(TileLook::mode(dark), width);
+    let window = |dark: bool, gray: bool| mini_window(TileLook::mode(dark, gray), width);
     // The dark half shows the right side of the same window, so the two halves line up.
     let half = width / 2.;
     let system = div()
@@ -2368,7 +2368,7 @@ fn theme_body(s: &Settings) -> AnyElement {
                 .w(px(half))
                 .h_full()
                 .overflow_hidden()
-                .child(window(false)),
+                .child(window(false, false)),
         )
         .child(
             div()
@@ -2382,22 +2382,31 @@ fn theme_body(s: &Settings) -> AnyElement {
                         .top_0()
                         .bottom_0()
                         .left(px(-half))
-                        .child(window(true)),
+                        .child(window(true, s.dark_shade == DarkShade::Gray)),
                 ),
         )
         .into_any_element();
+    // Dark gray is the dark theme with Arke 0.4's gray; System uses whichever dark was picked last.
     let options = [
         (
             ThemeMode::Light,
+            None,
             t!("settings.theme_light"),
-            window(false).into_any_element(),
+            window(false, false).into_any_element(),
         ),
         (
             ThemeMode::Dark,
+            Some(DarkShade::Black),
             t!("settings.theme_dark"),
-            window(true).into_any_element(),
+            window(true, false).into_any_element(),
         ),
-        (ThemeMode::System, t!("settings.theme_system"), system),
+        (
+            ThemeMode::Dark,
+            Some(DarkShade::Gray),
+            t!("settings.theme_gray"),
+            window(true, true).into_any_element(),
+        ),
+        (ThemeMode::System, None, t!("settings.theme_system"), system),
     ];
     div()
         .flex()
@@ -2407,14 +2416,21 @@ fn theme_body(s: &Settings) -> AnyElement {
             options
                 .into_iter()
                 .enumerate()
-                .map(|(ix, (mode, label, preview))| {
+                .map(|(ix, (mode, shade, label, preview))| {
+                    let selected =
+                        s.theme == mode && shade.is_none_or(|shade| s.dark_shade == shade);
                     tile(
                         ("theme", ix),
                         label.into_owned(),
-                        s.theme == mode,
+                        selected,
                         (width, height),
                         preview,
-                        move |st| st.theme = mode,
+                        move |st| {
+                            st.theme = mode;
+                            if let Some(shade) = shade {
+                                st.dark_shade = shade;
+                            }
+                        },
                     )
                 }),
         )
@@ -2422,11 +2438,12 @@ fn theme_body(s: &Settings) -> AnyElement {
 }
 
 /// Right side of the Theme header: the current choice.
-fn theme_label(mode: ThemeMode) -> String {
-    match mode {
-        ThemeMode::System => t!("settings.theme_system"),
-        ThemeMode::Light => t!("settings.theme_light"),
-        ThemeMode::Dark => t!("settings.theme_dark"),
+fn theme_label(mode: ThemeMode, shade: DarkShade) -> String {
+    match (mode, shade) {
+        (ThemeMode::System, _) => t!("settings.theme_system"),
+        (ThemeMode::Light, _) => t!("settings.theme_light"),
+        (ThemeMode::Dark, DarkShade::Black) => t!("settings.theme_dark"),
+        (ThemeMode::Dark, DarkShade::Gray) => t!("settings.theme_gray"),
     }
     .into_owned()
 }
