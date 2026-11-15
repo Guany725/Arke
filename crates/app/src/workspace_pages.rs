@@ -57,6 +57,11 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Closes the page the active tab shows, keeping the tab.
+    pub(super) fn drop_shown_page(&mut self) {
+        let _ = self.take_shown_page();
+    }
+
     /// Removes the page the active tab shows and returns its owner (`None` when a folder shows).
     fn take_shown_page(&mut self) -> Option<Owner> {
         if self.home_open() {
@@ -70,6 +75,11 @@ impl Workspace {
         } else {
             None
         }
+    }
+
+    /// Whether a page covers the active tab.
+    pub(super) fn page_shown(&self) -> bool {
+        self.home_open() || self.settings_open() || self.recycle_open() || self.whats_new_open()
     }
 
     /// Whether the page is visible, i.e. the active tab owns it.
@@ -239,6 +249,10 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.home_opens_folder(path, window, cx);
+    }
+
+    pub(crate) fn close_home_for_test(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_home(window, cx);
     }
 
     pub(crate) fn open_settings_for_test(&mut self, window: &mut Window, cx: &mut Context<Self>) {
