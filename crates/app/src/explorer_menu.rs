@@ -69,8 +69,6 @@ pub(crate) fn bind_keys(cx: &mut App) {
 const SUBMENU_DELAY: Duration = Duration::from_millis(180);
 /// Row ids for submenu alignment are `level * LEVEL_STRIDE + row`.
 const LEVEL_STRIDE: usize = 1000;
-/// Menu entrance and exit: slide this far (see `motion.rs`).
-const MENU_SLIDE: f32 = crate::motion::SLIDE;
 static NEXT_MENU: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -110,6 +108,10 @@ pub(crate) enum MenuCommand {
     Compress,
     /// Move the selection into a new folder.
     MoveToNewFolder,
+    /// Split view: copy the selection to the other pane's folder (Alt+C).
+    CopyToPeer,
+    /// Split view: move the selection to the other pane's folder (Alt+M).
+    MoveToPeer,
     /// Use this image as the Arke background.
     SetBackground,
     /// Import this `.json` as an Arke settings backup.
@@ -252,8 +254,8 @@ const fn glyph_for(command: MenuCommand) -> Option<Icon> {
         C::Open => Icon::Open,
         C::OpenInNewTab => Icon::TabOpen,
         C::OpenInNewWindow | C::DropShortcut => Icon::External,
-        C::Cut | C::DropMove => Icon::Cut,
-        C::Copy | C::CopyAddress | C::DropCopy => Icon::Copy,
+        C::Cut | C::DropMove | C::MoveToPeer => Icon::Cut,
+        C::Copy | C::CopyAddress | C::DropCopy | C::CopyToPeer => Icon::Copy,
         C::Paste => Icon::Paste,
         C::Rename | C::EditAddress => Icon::Rename,
         C::Delete | C::ClearHistory => Icon::Trash,
@@ -622,6 +624,15 @@ impl ContextMenu {
         }
         self.shell_slot = Some(new_slot);
         self.pinned_rows = added;
+    }
+
+    /// Test helper: the shortcut shown on the top-level item labeled `label`.
+    #[cfg(test)]
+    pub(crate) fn shortcut_of(&self, label: &str) -> Option<&'static str> {
+        self.entries.iter().find_map(|e| match e {
+            MenuEntry::Item(i) if i.label.as_ref() == label => i.shortcut,
+            _ => None,
+        })
     }
 
     /// Test helper: checked items at the top level.
@@ -1044,6 +1055,20 @@ impl Explorer {
                 C::MoveToNewFolder,
             ));
         }
+        // Split view: Alt+C / Alt+M are hard to find from the keyboard alone.
+        if self.pane.peer.is_some() {
+            entries.push(MenuEntry::Separator);
+            entries.push(item(
+                t!("menu.copy_to_other_pane"),
+                Some("Alt+C"),
+                C::CopyToPeer,
+            ));
+            entries.push(item(
+                t!("menu.move_to_other_pane"),
+                Some("Alt+M"),
+                C::MoveToPeer,
+            ));
+        }
         entries.push(MenuEntry::Separator);
         if single && *is_dir {
             entries.push(item(t!("menu.open_new_window"), None, C::OpenInNewWindow));
@@ -1403,6 +1428,7 @@ impl Explorer {
             C::OpenTerminal => self.open_terminal(&targets),
             C::Compress => self.start_compress(&targets, cx),
             C::MoveToNewFolder => self.move_into_new_folder(cx),
+            C::CopyToPeer | C::MoveToPeer => self.transfer_to_peer(command == C::MoveToPeer, cx),
             C::OpenInNewWindow => {
                 if let Some((path, true)) = targets.first().cloned() {
                     open_in_new_window(path);
@@ -2304,35 +2330,34 @@ impl Explorer {
                 outer,
                 ElementId::Name(format!("menu-{}-leave", menu.serial).into()),
                 0.,
-                -MENU_SLIDE / 2.,
+                0.,
             )
         } else {
             outer
-            .key_context("ContextMenu")
-            .track_focus(&menu.focus)
-            .on_action(cx.listener(Self::menu_up))
-            .on_action(cx.listener(Self::menu_down))
-            .on_action(cx.listener(Self::menu_left))
-            .on_action(cx.listener(Self::menu_right))
-            .on_action(cx.listener(Self::menu_confirm))
-            .on_action(cx.listener(Self::menu_dismiss))
-            .on_mouse_down_out(cx.listener(move |this, e: &MouseDownEvent, window, cx| {
-                let inside = geometry
-                    .borrow()
-                    .panels
-                    .iter()
-                    .any(|(&level, b)| level > 0 && b.contains(&e.position));
-                if !inside {
-                    this.close_menu(window, cx);
-                }
-            }))
-            // Slide down and fade in.
-            .with_animation(
-                ElementId::Name(format!("menu-{}", menu.serial).into()),
-                crate::motion::enter(),
-                |panel, t| crate::motion::slide_in(panel, t, 0., -MENU_SLIDE),
-            )
-            .into_any_element()
+                .key_context("ContextMenu")
+                .track_focus(&menu.focus)
+                .on_action(cx.listener(Self::menu_up))
+                .on_action(cx.listener(Self::menu_down))
+                .on_action(cx.listener(Self::menu_left))
+                .on_action(cx.listener(Self::menu_right))
+                .on_action(cx.listener(Self::menu_confirm))
+                .on_action(cx.listener(Self::menu_dismiss))
+                .on_mouse_down_out(cx.listener(move |this, e: &MouseDownEvent, window, cx| {
+                    let inside = geometry
+                        .borrow()
+                        .panels
+                        .iter()
+                        .any(|(&level, b)| level > 0 && b.contains(&e.position));
+                    if !inside {
+                        this.close_menu(window, cx);
+                    }
+                }))
+                .with_animation(
+                    ElementId::Name(format!("menu-{}", menu.serial).into()),
+                    crate::motion::menu_enter(),
+                    crate::motion::fade_in,
+                )
+                .into_any_element()
         };
         panels.push(
             deferred(
@@ -2387,8 +2412,7 @@ impl Explorer {
                 }
             }
             let (anchor, x) = (Anchor::TopLeft, px(left));
-            // Slide out from the opening side and fade in; replays when switching submenus.
-            let slide = if right_side { -MENU_SLIDE } else { MENU_SLIDE };
+            // Fades in; replays when switching submenus.
             let path = menu.open[..level]
                 .iter()
                 .map(ToString::to_string)
@@ -2400,14 +2424,14 @@ impl Explorer {
                     panel,
                     ElementId::Name(format!("menu-{}-{path}-leave", menu.serial).into()),
                     0.,
-                    -MENU_SLIDE / 2.,
+                    0.,
                 )
             } else {
                 panel
                     .with_animation(
                         ElementId::Name(format!("menu-{}-{path}", menu.serial).into()),
-                        crate::motion::enter(),
-                        move |panel, t| crate::motion::slide_in(panel, t, slide, 0.),
+                        crate::motion::menu_enter(),
+                        crate::motion::fade_in,
                     )
                     .into_any_element()
             };
