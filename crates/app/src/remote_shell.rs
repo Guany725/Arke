@@ -657,6 +657,16 @@ impl Shell for RemoteShell {
         }
         self.inner.file_icon(path, size)
     }
+    fn video_thumbnail(
+        &self,
+        path: &Path,
+        max_side: u32,
+    ) -> Result<Option<arke_core::thumbs::Thumbnail>, ShellError> {
+        if remote(path).is_some() {
+            return Ok(None);
+        }
+        self.inner.video_thumbnail(path, max_side)
+    }
     fn shell_menu(&self, paths: &[PathBuf], background: bool) -> Result<ShellMenu, ShellError> {
         if paths.iter().any(|p| remote(p).is_some()) {
             return Err(ShellError::NotOnRemote);
