@@ -7,7 +7,8 @@
 //! process to run. No native Windows menu is ever shown.
 //!
 //! Commands pinned from "Show more options" to the top don't wait for the whole Windows menu:
-//! their extensions are read on their own beside it (`explorer_menu_parts.rs`).
+//! their extensions are read on their own beside it (`explorer_menu_parts.rs`). Windows submenus
+//! that are filled only when opened are filled then (`explorer_menu_lazy.rs`).
 //!
 //! Extraction runs on a background thread (`arke_core::archive`) with cancellable progress in the
 //! status bar. The extracted folder is selected when done.
@@ -40,6 +41,8 @@ use crate::assets::Icon;
 use crate::settings::SettingsStore;
 use crate::shell::{ShellMenu, ShellMenuEntry};
 
+#[path = "explorer_menu_lazy.rs"]
+mod lazy;
 #[path = "explorer_menu_parts.rs"]
 mod parts;
 use crate::theme::{self, UiFont as _};
@@ -344,6 +347,8 @@ pub(crate) enum MenuEntry {
         /// "Show more options" and the submenus read from Windows inside it; `false` for Arke's
         /// own View submenu.
         shell: bool,
+        /// A Windows submenu filled only when it is opened (`explorer_menu_lazy.rs`).
+        lazy: Option<lazy::LazySubmenu>,
     },
     /// Row of icon buttons (cut, copy, rename, delete) at the bottom, as in the Windows 11 menu.
     Actions(Vec<MenuItem>),
@@ -409,19 +414,26 @@ impl MenuEntry {
                 enabled,
                 icon: i,
                 children,
+                lazy: index,
             } => {
                 let mut path = parent.to_vec();
                 path.push(&label);
-                let children = children
-                    .into_iter()
-                    .map(|c| Self::from_shell_in(c, &path, session))
-                    .collect();
+                let lazy = index.map(|index| lazy::LazySubmenu::new(session, index));
+                let children = if lazy.is_some() && children.is_empty() {
+                    vec![placeholder(t!("menu.loading"))]
+                } else {
+                    children
+                        .into_iter()
+                        .map(|c| Self::from_shell_in(c, &path, session))
+                        .collect()
+                };
                 Self::Submenu {
                     label: label.into(),
                     enabled,
                     icon: icon(i),
                     children,
                     shell: true,
+                    lazy,
                 }
             }
             ShellMenuEntry::Separator => Self::Separator,
@@ -730,6 +742,16 @@ impl ContextMenu {
             self.scroll(level).offset().y,
         )
     }
+
+    /// Test helper: where submenu row `ix` of `level` was drawn.
+    #[cfg(test)]
+    pub(crate) fn submenu_row_for_test(&self, level: usize, ix: usize) -> Option<Bounds<Pixels>> {
+        self.geometry
+            .borrow()
+            .rows
+            .get(&(level * LEVEL_STRIDE + ix))
+            .copied()
+    }
 }
 
 pub(crate) struct ExtractJob {
@@ -963,6 +985,7 @@ impl Explorer {
                 ),
             ],
             shell: false,
+            lazy: None,
         }
     }
 
@@ -1245,11 +1268,13 @@ impl Explorer {
             }) => children.iter().position(MenuEntry::selectable),
             _ => return false,
         };
+        let level = menu.open.len();
         menu.open.push(ix);
         menu.highlighted = first;
         menu.hover_task = None;
         menu.keyboard = true;
         self.ensure_shell_menu();
+        self.fill_lazy_submenu(level, ix);
         cx.notify();
         true
     }
@@ -1349,6 +1374,12 @@ impl Explorer {
                     menu.highlighted = None;
                     menu.keyboard = false;
                     this.ensure_shell_menu();
+                    // A submenu filled only when opened is asked for now, as it opens, not for
+                    // every row the pointer passes over on its way: each fill holds up the
+                    // Windows menu for a while.
+                    if submenu {
+                        this.fill_lazy_submenu(level, ix);
+                    }
                     cx.notify();
                 }
             });
@@ -1365,6 +1396,7 @@ impl Explorer {
             menu.hover_task = None;
             menu.keyboard = false;
             self.ensure_shell_menu();
+            self.fill_lazy_submenu(level, ix);
             cx.notify();
         }
     }
@@ -2012,6 +2044,7 @@ impl Explorer {
         if let Some(menu) = self.context_menu.as_ref() {
             self.learn_pin_owners(menu, request, cx);
         }
+        self.fill_lazy_for_pins(cx);
     }
 
     /// Runs the item with `verb` (e.g. "properties", "openas") from the classic Windows menu. The
@@ -3105,6 +3138,7 @@ fn more_options() -> MenuEntry {
         icon: None,
         children: vec![placeholder(t!("menu.loading"))],
         shell: true,
+        lazy: None,
     }
 }
 

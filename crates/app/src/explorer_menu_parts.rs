@@ -42,6 +42,8 @@ pub(crate) enum ShellMenuEvent {
     },
     /// Which extension pinned commands come from (empty: none).
     PinOwners(Vec<(String, String)>),
+    /// A submenu filled only when opened (`explorer_menu_lazy.rs`).
+    Submenu(super::lazy::Filled),
 }
 
 impl Explorer {
@@ -130,6 +132,7 @@ impl Explorer {
             .menu_pinned
             .clone();
         menu.sync_pinned(&pinned);
+        self.fill_lazy_for_pins(cx);
         cx.notify();
     }
 
@@ -184,6 +187,7 @@ impl Explorer {
                 name,
                 result,
             } => self.handle_menu_part(request, &name, result, cx),
+            ShellMenuEvent::Submenu(filled) => self.handle_submenu_filled(filled, cx),
             // Remembers which extension pinned commands come from.
             ShellMenuEvent::PinOwners(owners) => {
                 if !owners.is_empty() {
