@@ -417,6 +417,7 @@ fn app_main(mut args: Args) {
         app
     };
     app.run(move |cx: &mut App| {
+        start_type_names(cx);
         motion::sync_app(cx);
         frame_probe::init();
         text_input::bind_keys(cx);
@@ -1014,6 +1015,25 @@ fn follow_language_setting(store: &gpui::Entity<settings::SettingsStore>, cx: &m
     apply_language(&store.read(cx).settings.language.locale(), cx);
 }
 
+/// Starts looking up Windows' names for file types the built-in table doesn't have; windows
+/// repaint (and re-sort by type) when names arrive.
+fn start_type_names(cx: &mut App) {
+    let (tx, rx) = flume::bounded::<()>(1);
+    let notify = tx.clone();
+    arke_core::format::start_type_names(win_dragimage::registered_type_name, move || {
+        let _ = tx.try_send(());
+    });
+    media::start_icon_probe(win_dragimage::registered_default_icon, move || {
+        let _ = notify.try_send(());
+    });
+    cx.spawn(async move |cx| {
+        while rx.recv_async().await.is_ok() {
+            cx.update(App::refresh_windows);
+        }
+    })
+    .detach();
+}
+
 /// Switches strings and the CJK font fallback order to `locale`, repainting if either changed.
 fn apply_language(locale: &str, cx: &mut App) {
     // Fonts follow the UI language so Simplified text gets Simplified glyphs on a Traditional
@@ -1021,6 +1041,7 @@ fn apply_language(locale: &str, cx: &mut App) {
     let mut changed = theme::set_ui_language(locale, win::system_locale());
     if *rust_i18n::locale() != *locale {
         rust_i18n::set_locale(locale);
+        arke_core::format::language_changed();
         changed = true;
     }
     if changed {
