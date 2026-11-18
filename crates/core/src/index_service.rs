@@ -83,6 +83,14 @@ const GAP_BACKOFF_MAX: Duration = Duration::from_mins(30);
 const GAP_BACKOFF_MAX: Duration = Duration::from_millis(1200);
 /// How often to check whether the index is stale while running.
 const REFRESH_CHECK: Duration = Duration::from_mins(10);
+/// A root that couldn't be listed (offline share) is tried again after this.
+#[cfg(not(test))]
+const ROOT_RETRY: Duration = Duration::from_mins(10);
+#[cfg(test)]
+const ROOT_RETRY: Duration = Duration::from_millis(50);
+/// With [`IndexOptions::incremental`], a full walk at least this often: a refresh doesn't see
+/// files changed in place, or attribute changes, in folders it takes over.
+const FULL_WALK_EVERY: Duration = Duration::from_hours(24 * 7);
 /// How often to consider saving a checkpoint with a journal (latest position + changes since the
 /// build); [`checkpoint_due`] decides whether one is written.
 #[cfg(not(test))]
@@ -157,6 +165,9 @@ pub struct IndexOptions {
     pub excluded: Vec<PathBuf>,
     /// Stop walking past this many items (network locations); `None` for no limit.
     pub max_items: Option<usize>,
+    /// Rewalks list again only the folders that may have changed since the last one (see
+    /// [`Index::refresh`]); network locations, where every listing is a round trip.
+    pub incremental: bool,
 }
 
 impl IndexOptions {
@@ -209,6 +220,9 @@ pub enum Rebuild {
     LargeMoveIn(usize),
     /// Asked for ("Rebuild" in settings).
     Requested,
+    /// Started again with a saved index of a location without a journal: catch up on changes
+    /// made meanwhile (an incremental rewalk, see [`IndexOptions::incremental`]).
+    Resumed,
 }
 
 impl std::fmt::Display for Rebuild {
@@ -225,6 +239,7 @@ impl std::fmt::Display for Rebuild {
             Self::TooManyChanges(n) => write!(f, "{n} changes at once"),
             Self::LargeMoveIn(n) => write!(f, "moved-in folder with over {n} items"),
             Self::Requested => f.write_str("requested"),
+            Self::Resumed => f.write_str("catching up on changes made while closed"),
         }
     }
 }
@@ -292,6 +307,15 @@ struct Shared {
     caught_up: Mutex<Vec<bool>>,
     /// Matches of the previous query, used to narrow the next one.
     narrow: Mutex<Option<Narrow>>,
+    /// The folder watcher works: attached to every watched root, and no events lost since.
+    watch_alive: AtomicBool,
+    /// Bumped each time the watcher is attached to every watched root.
+    watch_epoch: std::sync::atomic::AtomicU64,
+    /// `watch_epoch` when the current index's walk started with the watcher working (0: the
+    /// index wasn't walked while watched in this run, so changes since may be missing).
+    fresh_epoch: std::sync::atomic::AtomicU64,
+    /// When the last full walk (not a refresh) of these roots ended, Unix seconds.
+    last_full_walk: Mutex<Option<u64>>,
     on_change: Box<dyn Fn() + Send + Sync>,
 }
 
@@ -332,6 +356,7 @@ fn refines(prev: &str, next: &str) -> bool {
 impl IndexService {
     /// Starts the service (cache loading, watching and rebuilding all happen in the background).
     /// Calls `on_change` on a background thread when status changes.
+    #[allow(clippy::too_many_lines, reason = "the startup steps, in order")]
     pub fn start(
         fs: Arc<dyn Fs>,
         opts: IndexOptions,
@@ -371,6 +396,10 @@ impl IndexService {
             live: std::sync::atomic::AtomicUsize::new(0),
             caught_up: Mutex::new(Vec::new()),
             narrow: Mutex::new(None),
+            watch_alive: AtomicBool::new(false),
+            watch_epoch: std::sync::atomic::AtomicU64::new(0),
+            fresh_epoch: std::sync::atomic::AtomicU64::new(0),
+            last_full_walk: Mutex::new(None),
             on_change: Box::new(on_change),
         });
         let weak = Arc::downgrade(&shared);
@@ -401,6 +430,13 @@ impl IndexService {
                     Start::Resume(_) => shared.build(Rebuild::Stale),
                     Start::Build(reason) => shared.build(reason),
                     Start::NoJournal if shared.is_stale() => shared.build(shared.stale_reason()),
+                    // Cheap to rewalk (only changed folders): catch up on what changed while Arke
+                    // was closed, so the index is current again.
+                    Start::NoJournal
+                        if shared.opts.incremental && shared.index.read().is_some() =>
+                    {
+                        shared.build(Rebuild::Resumed);
+                    }
                     Start::NoJournal => {
                         // Saved index is fresh enough: no rewalk.
                         shared.building.store(false, Ordering::Release);
@@ -481,8 +517,9 @@ impl IndexService {
         show_hidden: bool,
         cancel: &AtomicBool,
     ) -> Option<Vec<IndexHit>> {
+        // Before the first build ends: what it has walked so far.
         let index = self.shared.index.read().clone();
-        let Some(index) = index else {
+        let Some(index) = index.or_else(|| self.shared.progress.partial.lock().clone()) else {
             return Some(Vec::new());
         };
         let query = Query::parse(input, clock);
@@ -602,6 +639,30 @@ impl IndexService {
             out.push((child.name, size));
         }
         Some(out)
+    }
+
+    /// Every item below `dir` this index has, with the changes seen since its build (see
+    /// [`Index::items_under`]): a search below `dir` can take these instead of walking it. `None`
+    /// when the index can't stand in for a walk: not known to be current (only the saved index
+    /// so far, the watcher broke or lost events, a rewalk to catch up still running), cut off at
+    /// the item limit, no index yet, `dir` not covered, or cancelled.
+    pub fn items_under(
+        &self,
+        dir: &Path,
+        show_hidden: bool,
+        cancel: &AtomicBool,
+    ) -> Option<crate::index::IndexedTree> {
+        let shared = &self.shared;
+        if shared.opts.passive || !shared.is_current() {
+            return None;
+        }
+        let index = shared.index.read().clone()?;
+        // Folders past the limit were never listed: they'd look empty.
+        if shared.rules.max_items.is_some_and(|max| index.len() >= max) {
+            return None;
+        }
+        let overlay = shared.overlay.lock().under(dir);
+        index.items_under(dir, &overlay, show_hidden, cancel)
     }
 
     /// Rewalks (no-op if a build is already running).
@@ -766,6 +827,9 @@ impl Shared {
             }
         }
         *self.cache_file.lock() = Some(from);
+        *self.last_full_walk.lock() = std::fs::read_to_string(walked_path(path))
+            .ok()
+            .and_then(|s| s.trim().parse().ok());
         self.set_index(index);
     }
 
@@ -1055,6 +1119,7 @@ impl Shared {
     }
 
     fn watch_roots_at(&self, weak: &Weak<Self>, which: &[usize]) {
+        let mut all = true;
         for root in which.iter().filter_map(|&i| self.opts.roots.get(i)) {
             let weak = Weak::clone(weak);
             let watched = self.fs.watch_tree(
@@ -1067,14 +1132,48 @@ impl Shared {
             );
             match watched {
                 Ok(w) => self.watchers.lock().push(w),
-                Err(err) => log::warn!("cannot watch {}: {err}", root.display()),
+                Err(err) => {
+                    all = false;
+                    log::warn!("cannot watch {}: {err}", root.display());
+                }
             }
         }
+        if all {
+            self.watch_epoch.fetch_add(1, Ordering::AcqRel);
+        }
+        self.watch_alive.store(all, Ordering::Release);
+    }
+
+    /// Whether the index is known to hold what's on disk now: every journaled root is caught
+    /// up, and the others were walked in this run while the folder watcher was working, which
+    /// it still is. Not so for a saved index of a share loaded at startup (changes made while
+    /// Arke was closed aren't in it), or once the watcher failed or lost events (until a walk
+    /// after watching again).
+    fn is_current(&self) -> bool {
+        let journaled = self.journaled.lock().clone();
+        let caught_up = self.caught_up.lock().clone();
+        let watched =
+            (0..self.opts.roots.len()).any(|i| !journaled.get(i).copied().unwrap_or(false));
+        let journals_ok = (0..self.opts.roots.len()).all(|i| {
+            !journaled.get(i).copied().unwrap_or(false)
+                || caught_up.get(i).copied().unwrap_or(false)
+        });
+        let epoch = self.watch_epoch.load(Ordering::Acquire);
+        journals_ok
+            && (!watched
+                || (self.watch_alive.load(Ordering::Acquire)
+                    && epoch != 0
+                    && self.fresh_epoch.load(Ordering::Acquire) == epoch))
     }
 
     fn on_event(self: &Arc<Self>, event: WatchEvent) {
         if self.stopped.load(Ordering::Relaxed) {
             return;
+        }
+        if matches!(event, WatchEvent::Rescan) {
+            // Events lost, or the watch broke (a share went away): the index can't be trusted to
+            // be current until a walk after watching again.
+            self.watch_alive.store(false, Ordering::Release);
         }
         match event {
             WatchEvent::Changed(paths) => self.enqueue(paths.into_iter().map(|p| (p, false))),
@@ -1460,28 +1559,87 @@ impl Shared {
                 _ => Err(io::ErrorKind::Unsupported.into()),
             }
         };
-        let index = Index::build_listed(
-            self.fs.as_ref(),
-            &self.opts.roots,
-            self.opts.threads,
-            &self.stopped,
-            &self.progress,
-            &move || init(),
-            &self.rules,
-            &lister,
-        )
+        // Watch again first if the watcher broke: changes during the walk are then caught, and
+        // the index this walk makes counts as current only if it was watched all along.
+        if !self.opts.passive && !self.watch_alive.load(Ordering::Acquire) && self.has_unjournaled()
+        {
+            self.watchers.lock().clear();
+            self.watch_roots(&Arc::downgrade(self));
+        }
+        let watched_from = if self.watch_alive.load(Ordering::Acquire) {
+            self.watch_epoch.load(Ordering::Acquire)
+        } else {
+            0
+        };
+        let current = self.index.read().clone();
+        let base = self.refresh_base(current.as_ref(), reason);
+        self.progress.reused.store(0, Ordering::Relaxed);
+        self.progress.failed_roots.store(0, Ordering::Relaxed);
+        // Nothing to search yet: the walk shares what it has so far.
+        self.progress
+            .want_partial
+            .store(current.is_none(), Ordering::Relaxed);
+        drop(current);
+        let full = base.is_none();
+        let index = match &base {
+            Some((old, relist)) => Index::refresh(
+                self.fs.as_ref(),
+                old,
+                relist,
+                self.opts.threads,
+                &self.stopped,
+                &self.progress,
+                &move || init(),
+                &self.rules,
+            ),
+            None => Index::build_listed(
+                self.fs.as_ref(),
+                &self.opts.roots,
+                self.opts.threads,
+                &self.stopped,
+                &self.progress,
+                &move || init(),
+                &self.rules,
+                &lister,
+            ),
+        }
         .with_cursors(cursors.clone());
+        drop(base);
+        self.progress.want_partial.store(false, Ordering::Relaxed);
         if self.stopped.load(Ordering::Relaxed) {
             return;
         }
+        if Index::roots_failed(&self.progress) {
+            // An offline share lists as nothing: keep what we have and try again later.
+            log::warn!(
+                "global search: can't list {}, keeping the current index ({reason})",
+                crate::index::roots_label(&self.opts.roots)
+            );
+            self.schedule(reason, Instant::now() + ROOT_RETRY);
+            self.building.store(false, Ordering::Release);
+            (self.on_change)();
+            return;
+        }
         log::info!(
-            "global search index built: {}, {} items, {:.1} s",
+            "global search index built: {}, {} items, {:.1} s{}",
             crate::index::roots_label(&self.opts.roots),
             index.len(),
-            started.elapsed().as_secs_f32()
+            started.elapsed().as_secs_f32(),
+            match self.progress.reused.load(Ordering::Relaxed) {
+                0 => String::new(),
+                n => format!(", {n} unchanged folders not listed again"),
+            }
         );
+        if full {
+            let now = crate::index::unix_secs(SystemTime::now());
+            *self.last_full_walk.lock() = Some(now);
+            if let Some(cache) = &self.opts.cache {
+                let _ = std::fs::write(walked_path(cache), now.to_string());
+            }
+        }
         let (index, replaced) = self.save_and_map(index);
         self.overlay.lock().prune_before(seq);
+        self.fresh_epoch.store(watched_from, Ordering::Release);
         self.building.store(false, Ordering::Release);
         self.set_index(index);
         // Old file: can't be deleted while queries still use it; leave it (overwritten next save,
@@ -1490,6 +1648,41 @@ impl Shared {
             let _ = std::fs::remove_file(old);
         }
         self.follow_all(&cursors);
+    }
+
+    /// The index an incremental rewalk starts from ([`IndexOptions::incremental`]): the current
+    /// one with the changes recorded since folded in, so folders taken over unchanged carry
+    /// them, and the folders those changes were in (listed again whatever their time says).
+    /// `None` for a full walk: not incremental, asked for by the user, nothing to start from,
+    /// built with other rules, cut off at the item limit (folders it never got to would look
+    /// empty and unchanged), or no full walk for [`FULL_WALK_EVERY`] (a refresh never sees files
+    /// changed in place in folders it takes over).
+    fn refresh_base(
+        &self,
+        current: Option<&Arc<Index>>,
+        reason: Rebuild,
+    ) -> Option<(Arc<Index>, Vec<PathBuf>)> {
+        let now = crate::index::unix_secs(SystemTime::now());
+        let walked_lately = self
+            .last_full_walk
+            .lock()
+            .is_some_and(|at| now.saturating_sub(at) < FULL_WALK_EVERY.as_secs());
+        let old = current.filter(|old| {
+            self.opts.incremental
+                && walked_lately
+                && !matches!(reason, Rebuild::Requested)
+                && old.roots() == self.opts.roots.as_slice()
+                && old.skipped_build_dirs() == self.rules.skip_build_dirs
+                && old.excluded_hash() == self.rules.fingerprint()
+                && self.rules.max_items.is_none_or(|max| old.len() < max)
+        })?;
+        let overlay = self.overlay.lock().clone();
+        if overlay.is_empty() {
+            return Some((Arc::clone(old), Vec::new()));
+        }
+        let relist = overlay.folders_touched();
+        old.merged(&overlay, &self.rules, &self.stopped)
+            .map(|merged| (Arc::new(merged.index), relist))
     }
 
     /// Writes `index` to the cache file not currently mapped and maps it instead (the in-memory
@@ -1590,6 +1783,11 @@ fn checkpoint_path(cache: &Path) -> PathBuf {
     cache.with_extension("checkpoint")
 }
 
+/// When the saved index was last walked in full (not refreshed), in Unix seconds as text.
+fn walked_path(cache: &Path) -> PathBuf {
+    cache.with_extension("walked")
+}
+
 /// Alternate save name (`index.bin` -> `index.alt.bin`). The mapped file can't be
 /// overwritten, so saves alternate between the two names.
 fn alt_path(path: &Path) -> PathBuf {
@@ -1657,6 +1855,7 @@ mod tests {
             passive: false,
             excluded: Vec::new(),
             max_items: None,
+            incremental: false,
         }
     }
 
@@ -1670,6 +1869,188 @@ mod tests {
     fn ready(svc: &IndexService) -> bool {
         let s = svc.status();
         s.count.is_some() && s.scanning.is_none()
+    }
+
+    /// Before the first index exists, searches see what the walk has found so far.
+    #[test]
+    fn a_first_build_is_searchable_before_it_ends() {
+        let fs = FakeFs::new();
+        let dir = |name: &str| Entry::new(name, EntryKind::Dir, 0, None, 0);
+        let file = |name: &str| Entry::new(name, EntryKind::File, 1, None, 0);
+        fs.insert_dir(r"C:\", vec![dir("a"), dir("b"), dir("slow")]);
+        fs.insert_dir(r"C:\a", vec![file("found.txt")]);
+        fs.insert_dir(r"C:\b", vec![file("other.txt")]);
+        fs.set_delay(r"C:\b", Duration::from_millis(50));
+        fs.insert_dir(r"C:\slow", vec![file("late.txt")]);
+        fs.hang(r"C:\slow");
+        let svc = IndexService::start(
+            Arc::clone(&fs) as Arc<dyn Fs>,
+            IndexOptions {
+                threads: 3,
+                ..opts(None)
+            },
+            || {},
+        );
+        wait("partial results", || {
+            found(&svc, "found") == [r"C:\a\found.txt"]
+        });
+        assert!(svc.status().scanning.is_some(), "still walking");
+        assert!(found(&svc, "late").is_empty());
+        fs.release_all();
+        wait("built", || ready(&svc));
+        assert_eq!(found(&svc, "late"), [r"C:\slow\late.txt"]);
+    }
+
+    /// With `incremental`, a rewalk lists again only folders that may have changed; one the user
+    /// asks for lists everything.
+    #[test]
+    fn incremental_rebuilds_list_only_changed_folders() {
+        let fs = FakeFs::new();
+        let then = Some(std::time::UNIX_EPOCH + Duration::from_secs(1_000));
+        let dir = |name: &str| Entry::new(name, EntryKind::Dir, 0, then, 0);
+        let file = |name: &str| Entry::new(name, EntryKind::File, 1, None, 0);
+        fs.insert_dir(r"C:\", vec![dir("a"), dir("b")]);
+        fs.insert_dir(r"C:\a", vec![file("a.txt")]);
+        fs.insert_dir(r"C:\b", vec![file("b.txt")]);
+        let svc = IndexService::start(
+            Arc::clone(&fs) as Arc<dyn Fs>,
+            IndexOptions {
+                incremental: true,
+                refresh_after: Duration::from_hours(1),
+                ..opts(None)
+            },
+            || {},
+        );
+        wait("built", || ready(&svc));
+        let calls = fs.read_dir_calls();
+        svc.shared.request_build(Rebuild::Stale);
+        wait("rewalked", || svc.rebuilds() == 2 && ready(&svc));
+        assert_eq!(
+            fs.read_dir_calls() - calls,
+            1,
+            "only the root is listed again"
+        );
+        assert_eq!(found(&svc, "b.txt"), [r"C:\b\b.txt"]);
+        svc.rebuild();
+        wait("rebuilt", || svc.rebuilds() == 3 && ready(&svc));
+        assert_eq!(fs.read_dir_calls() - calls, 4);
+    }
+
+    fn share_opts(cache: Option<PathBuf>) -> IndexOptions {
+        IndexOptions {
+            roots: vec![PathBuf::from(r"\\nas\s")],
+            incremental: true,
+            refresh_after: Duration::from_hours(1),
+            ..opts(cache)
+        }
+    }
+
+    fn share_fs() -> Arc<FakeFs> {
+        let fs = FakeFs::new();
+        let then = Some(std::time::UNIX_EPOCH + Duration::from_secs(1_000));
+        fs.insert_dir(
+            r"\\nas\s",
+            vec![Entry::new("docs", EntryKind::Dir, 0, then, 0)],
+        );
+        fs.insert_dir(
+            r"\\nas\s\docs",
+            vec![Entry::new("plan.txt", EntryKind::File, 1, None, 0)],
+        );
+        fs
+    }
+
+    fn items(svc: &IndexService) -> Option<usize> {
+        svc.items_under(Path::new(r"\\nas\s"), false, &AtomicBool::new(false))
+            .map(|tree| tree.items.len())
+    }
+
+    /// A search may take a folder's items from the index only while the index is known to be
+    /// current: walked in this run with the watcher working. Not once the watcher lost events
+    /// (until a rewalk after watching again), and not for a saved index loaded at startup
+    /// before the rewalk that catches up on changes made meanwhile.
+    #[test]
+    fn items_come_from_the_index_only_while_it_is_current() {
+        let (dir, cache) = temp_cache("current");
+        let fs = share_fs();
+        let svc = IndexService::start(
+            Arc::clone(&fs) as Arc<dyn Fs>,
+            share_opts(Some(cache.clone())),
+            || {},
+        );
+        wait("built", || ready(&svc));
+        assert_eq!(items(&svc), Some(2));
+        fs.emit(Path::new(r"\\nas\s"), &WatchEvent::Rescan);
+        assert_eq!(items(&svc), None, "the watcher lost events");
+        wait("rewalked", || svc.rebuilds() == 2 && ready(&svc));
+        assert_eq!(items(&svc), Some(2), "watched again and walked");
+        drop(svc);
+
+        // Started again with the saved index: not current until the catch-up rewalk ends.
+        fs.hang(r"\\nas\s");
+        let svc = IndexService::start(
+            Arc::clone(&fs) as Arc<dyn Fs>,
+            share_opts(Some(cache)),
+            || {},
+        );
+        wait("loaded", || svc.status().count.is_some());
+        assert!(svc.status().scanning.is_some(), "catching up");
+        assert_eq!(items(&svc), None);
+        fs.release_all();
+        wait("caught up", || ready(&svc));
+        assert_eq!(items(&svc), Some(2));
+        assert_eq!(svc.last_rebuild(), Some(Rebuild::Resumed));
+        drop(svc);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// An index cut off at the item limit never stands in for a walk: folders it didn't get to
+    /// would look empty.
+    #[test]
+    fn a_truncated_index_is_not_used_for_items() {
+        let svc = IndexService::start(
+            share_fs() as Arc<dyn Fs>,
+            IndexOptions {
+                max_items: Some(2),
+                ..share_opts(None)
+            },
+            || {},
+        );
+        wait("built", || ready(&svc));
+        assert_eq!(items(&svc), None);
+    }
+
+    /// A rewalk while the share is offline keeps the index there is instead of an empty one.
+    #[test]
+    fn an_offline_share_keeps_its_index() {
+        let fs = share_fs();
+        let svc = IndexService::start(Arc::clone(&fs) as Arc<dyn Fs>, share_opts(None), || {});
+        wait("built", || ready(&svc));
+        fs.remove_dir(Path::new(r"\\nas\s"));
+        svc.rebuild();
+        wait("rewalked", || {
+            svc.rebuilds() >= 2 && !svc.shared.building.load(Ordering::Acquire)
+        });
+        assert_eq!(svc.status().count, Some(3));
+        assert_eq!(found(&svc, "plan"), [r"\\nas\s\docs\plan.txt"]);
+    }
+
+    /// Rewalks are incremental, but at least once a week a full walk catches what they can't
+    /// see (files changed in place in folders taken over).
+    #[test]
+    fn incremental_rewalks_still_walk_fully_every_week() {
+        let fs = share_fs();
+        let svc = IndexService::start(Arc::clone(&fs) as Arc<dyn Fs>, share_opts(None), || {});
+        wait("built", || ready(&svc));
+        let calls = fs.read_dir_calls();
+        let week_ago = crate::index::unix_secs(SystemTime::now()) - FULL_WALK_EVERY.as_secs();
+        *svc.shared.last_full_walk.lock() = Some(week_ago);
+        svc.shared.request_build(Rebuild::Stale);
+        wait("rewalked", || svc.rebuilds() == 2 && ready(&svc));
+        assert_eq!(fs.read_dir_calls() - calls, 2, "everything listed again");
+        let calls = fs.read_dir_calls();
+        svc.shared.request_build(Rebuild::Stale);
+        wait("refreshed", || svc.rebuilds() == 3 && ready(&svc));
+        assert_eq!(fs.read_dir_calls() - calls, 1, "then incremental again");
     }
 
     /// Skip build folders: `node_modules` and Rust `target` are not entered (the folder itself is
