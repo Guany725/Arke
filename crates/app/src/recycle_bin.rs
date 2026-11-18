@@ -2,8 +2,10 @@
 //!
 //! Lists the recycle bins of all drives: name, original location, deletion date, size. Restore or
 //! permanently delete the selection, restore all, or empty. Permanent delete always asks first
-//! (Arke's own dialog); name conflicts on restore are left to Windows. Listing, restore and delete
-//! run in the background.
+//! (Arke's own dialog) and then runs as Arke's own operation, with no Windows dialogs: progress and
+//! Cancel in a toast, listed in the operation center, items that fail named in an error toast while
+//! the rest go. Name conflicts on restore are left to Windows. Listing, restore and delete run in
+//! the background.
 
 use std::collections::BTreeSet;
 use std::ops::Range;
@@ -14,8 +16,8 @@ use std::sync::Arc;
 use gpui::{
     AnimationExt, AnyElement, App, ClickEvent, Context, EventEmitter, FocusHandle, Focusable,
     KeyBinding, MouseButton, MouseDownEvent, Pixels, Point, ScrollStrategy, SharedString,
-    UniformListScrollHandle, Window, actions, anchored, deferred, div, point, prelude::*, px, svg,
-    uniform_list,
+    Subscription, UniformListScrollHandle, Window, actions, anchored, deferred, div, point,
+    prelude::*, px, svg, uniform_list,
 };
 use rust_i18n::t;
 
@@ -25,9 +27,13 @@ use arke_core::format::{format_count, format_size};
 use crate::a11y::A11yExt as _;
 use crate::assets::Icon;
 use crate::explorer::{Explorer, kind_icon, spawn_thread};
+use crate::op_center::OpCenter;
 use crate::scrollbar::ScrollbarDrag;
-use crate::shell::{OpOutcome, RecycledItem, Shell};
+use crate::shell::{OpOutcome, OpProgress, RecycledItem, Shell, ShellError};
 use crate::theme;
+
+/// Permanent delete's name in the operation center and its toast (locale key)
+const PURGE_VERB: &str = "op.delete_permanently";
 
 actions!(
     recycle_bin,
@@ -135,13 +141,25 @@ pub(crate) struct RecycleBin {
     sort: (Column, bool),
     scroll: UniformListScrollHandle,
     scrollbar_drag: ScrollbarDrag,
-    busy: Option<Job>,
     ask: Option<Ask>,
     menu: Option<Point<Pixels>>,
     notice: Option<SharedString>,
+    /// Why the last restore or permanent delete failed (some items or all), until closed
+    failure: Option<SharedString>,
     /// Listing request counter; older results are dropped
     serial: u32,
+    /// Redraws the progress toast as the operation center polls the job, and follows a restore or
+    /// permanent delete starting and ending (also one started by an earlier page)
+    _subscriptions: [Subscription; 2],
 }
+
+/// The restore or permanent delete running now, with its progress. Kept by the operation rather
+/// than the page, so closing and reopening the page while the bin empties can't start emptying the
+/// same items again.
+#[derive(Default)]
+struct Running(Option<(Job, Arc<OpProgress>)>);
+
+impl gpui::Global for Running {}
 
 impl EventEmitter<RecycleEvent> for RecycleBin {}
 
@@ -155,6 +173,18 @@ impl RecycleBin {
     pub(crate) fn new(shell: Arc<dyn Shell>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
+        let ops = cx.observe_global::<OpCenter>(|_: &mut Self, cx| {
+            if Self::busy(cx).is_some() {
+                cx.notify();
+            }
+        });
+        let running = cx.observe_global::<Running>(|this: &mut Self, cx| {
+            // Finished: show what is left.
+            if Self::busy(cx).is_none() {
+                this.reload(cx);
+            }
+            cx.notify();
+        });
         let mut this = Self {
             shell,
             focus,
@@ -168,14 +198,28 @@ impl RecycleBin {
             sort: (Column::Deleted, false),
             scroll: UniformListScrollHandle::new(),
             scrollbar_drag: ScrollbarDrag::default(),
-            busy: None,
             ask: None,
             menu: None,
             notice: None,
+            failure: None,
             serial: 0,
+            _subscriptions: [ops, running],
         };
         this.reload(cx);
         this
+    }
+
+    /// The restore or permanent delete running now, from this page or an earlier one.
+    fn busy(cx: &App) -> Option<Job> {
+        cx.try_global::<Running>()?.0.as_ref().map(|(job, _)| *job)
+    }
+
+    /// Progress of the permanent delete running now (drawn as a toast, with Cancel).
+    fn progress(cx: &App) -> Option<Arc<OpProgress>> {
+        match &cx.try_global::<Running>()?.0 {
+            Some((Job::Purge, progress)) => Some(Arc::clone(progress)),
+            _ => None,
+        }
     }
 
     /// Reload the listing in the background. Selection is kept by item.
@@ -285,7 +329,7 @@ impl RecycleBin {
     }
 
     fn open_menu(&mut self, ix: usize, position: Point<Pixels>, cx: &mut Context<Self>) {
-        if self.busy.is_some() {
+        if Self::busy(cx).is_some() {
             return;
         }
         // Right-click on an unselected row selects only it (like the file list).
@@ -351,7 +395,7 @@ impl RecycleBin {
     }
 
     fn ask(&mut self, job: Job, items: Vec<RecycledItem>, all: bool, cx: &mut Context<Self>) {
-        if items.is_empty() || self.busy.is_some() {
+        if items.is_empty() || Self::busy(cx).is_some() {
             cx.notify();
             return;
         }
@@ -374,33 +418,52 @@ impl RecycleBin {
     }
 
     /// Restore or permanently delete in the background, then reload and report the count in the
-    /// command bar.
+    /// command bar. A permanent delete is Arke's own (no Windows dialogs): it is listed in the
+    /// operation center and shows a progress toast with Cancel; failures stay in an error toast.
     fn run(&mut self, job: Job, items: Vec<RecycledItem>, cx: &mut Context<Self>) {
-        if items.is_empty() || self.busy.is_some() {
+        if items.is_empty() || Self::busy(cx).is_some() {
             return;
         }
-        self.busy = Some(job);
         self.notice = None;
-        cx.notify();
+        self.failure = None;
         let shell = Arc::clone(&self.shell);
         let owner = self.owner;
         let count = items.len();
+        let (center_job, progress) = if job == Job::Purge {
+            let subject = items.first().map(|item| (item.name.clone(), count));
+            let (id, progress) = OpCenter::begin(cx, PURGE_VERB, subject);
+            (Some(id), progress)
+        } else {
+            (None, Arc::new(OpProgress::default()))
+        };
+        cx.set_global(Running(Some((job, Arc::clone(&progress)))));
+        cx.notify();
         let (tx, rx) = flume::bounded(1);
         spawn_thread("recycle-op", move || {
             let result = match job {
                 Job::Restore => shell.recycle_restore(&items, owner),
-                Job::Purge => shell.recycle_purge(&items, owner),
+                Job::Purge => shell.recycle_purge(&items, &progress),
             };
             let _ = tx.send(result);
         });
         cx.spawn(async move |this, cx| {
-            let result = match rx.recv_async().await {
+            let result = rx.recv_async().await;
+            // Cancelled after some items failed or with one half deleted: both are said.
+            let stopped = matches!(result, Ok(Err(ShellError::Stopped { .. })));
+            let result = match result {
                 Ok(result) => result.map_err(|e| e.to_string()),
-                Err(_) => Err(String::new()),
+                // The thread died without an answer.
+                Err(_) => Err(t!("ops.crashed").into_owned()),
             };
+            // Recorded even if the page was closed meanwhile.
+            cx.update(|cx| {
+                cx.set_global(Running(None));
+                if let Some(id) = center_job {
+                    OpCenter::finish(cx, id, PURGE_VERB, &result);
+                }
+            });
             let _ = this.update(cx, |this, cx| {
-                this.busy = None;
-                this.notice = match result {
+                this.notice = match &result {
                     Ok(OpOutcome::Done) => Some(
                         match job {
                             Job::Restore => tn!("recycle.restored", count),
@@ -409,10 +472,28 @@ impl RecycleBin {
                         .into_owned()
                         .into(),
                     ),
-                    // The user canceled in the Windows dialog; no need to say it again.
-                    Ok(OpOutcome::Cancelled) => None,
-                    Err(why) => Some(why.into()),
+                    Ok(OpOutcome::Cancelled) => match job {
+                        Job::Purge => {
+                            Some(t!("ops.cancelled", op = t!(PURGE_VERB)).into_owned().into())
+                        }
+                        // The user canceled in the Windows dialog; no need to say it again.
+                        Job::Restore => None,
+                    },
+                    Err(_) if stopped => {
+                        Some(t!("ops.cancelled", op = t!(PURGE_VERB)).into_owned().into())
+                    }
+                    Err(_) => None,
                 };
+                this.failure = result.err().map(|why| {
+                    if stopped {
+                        return why.into();
+                    }
+                    let op = match job {
+                        Job::Restore => t!("recycle.restore"),
+                        Job::Purge => t!(PURGE_VERB),
+                    };
+                    t!("ops.failed", op = op, error = why).into_owned().into()
+                });
                 this.selected.clear();
                 this.cursor = None;
                 this.reload(cx);
@@ -449,6 +530,22 @@ impl RecycleBin {
             (job, true) => self.ask(job, self.items.clone(), true, cx),
         }
         self.ask.is_some()
+    }
+
+    /// Tests: the error toast's text, the command bar status, and whether a permanent delete runs.
+    #[cfg(test)]
+    pub(crate) fn failure_for_test(&self) -> Option<String> {
+        self.failure.as_ref().map(ToString::to_string)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn status_for_test(&self, cx: &App) -> String {
+        self.status(cx).to_string()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn purging_for_test(cx: &App) -> bool {
+        Self::progress(cx).is_some()
     }
 
     #[cfg(test)]
@@ -519,6 +616,7 @@ impl Render for RecycleBin {
                 d.child(self.render_header(wide, cx))
             })
             .child(body)
+            .children(self.render_toasts(cx))
             .children(self.render_menu(window, cx))
             .children(self.render_ask(cx))
     }
@@ -526,7 +624,7 @@ impl Render for RecycleBin {
 
 impl RecycleBin {
     /// Command bar status: what's running or just finished, otherwise item count and size.
-    fn status(&self) -> SharedString {
+    fn status(&self, cx: &App) -> SharedString {
         let total: u64 = self.items.iter().map(|item| item.size).sum();
         let chosen: u64 = self
             .selected
@@ -534,7 +632,7 @@ impl RecycleBin {
             .filter_map(|&ix| self.items.get(ix))
             .map(|item| item.size)
             .sum();
-        match (self.busy, &self.notice) {
+        match (Self::busy(cx), &self.notice) {
             (Some(Job::Restore), _) => t!("recycle.restoring").into_owned().into(),
             (Some(Job::Purge), _) => t!("recycle.purging").into_owned().into(),
             (None, Some(notice)) => notice.clone(),
@@ -556,10 +654,44 @@ impl RecycleBin {
         }
     }
 
+    /// Bottom right, like the file list's: the running permanent delete (progress, Cancel) and
+    /// what failed (Close).
+    fn render_toasts(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let mut toasts: Vec<AnyElement> = Vec::new();
+        if let Some(progress) = &Self::progress(cx) {
+            toasts.push(Explorer::op_toast(progress, PURGE_VERB, cx));
+        }
+        if let Some(failure) = &self.failure {
+            toasts.push(crate::explorer::error_toast(
+                "recycle-error",
+                failure.to_string(),
+                cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.failure = None;
+                    cx.notify();
+                }),
+            ));
+        }
+        if toasts.is_empty() {
+            return None;
+        }
+        Some(
+            div()
+                .absolute()
+                .right(theme::S_16)
+                .bottom(theme::S_16)
+                .w(px(360.))
+                .flex()
+                .flex_col()
+                .gap(theme::S_8)
+                .children(toasts)
+                .into_any_element(),
+        )
+    }
+
     /// Command bar: status on the left, actions on the right.
     fn render_commands(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let status = self.status();
-        let idle = self.busy.is_none();
+        let status = self.status(cx);
+        let idle = Self::busy(cx).is_none();
         let some = idle && !self.selected.is_empty();
         let any = idle && !self.items.is_empty();
         div()
