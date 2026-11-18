@@ -572,7 +572,7 @@ impl Explorer {
             .a11y(gpui::Role::Toolbar, t!("a11y.address"))
             .relative()
             .min_w_0()
-            .h(theme::H_CTL)
+            .h(crate::handheld::metric(theme::H_CTL))
             .flex()
             .items_center()
             .ml(theme::S_4)

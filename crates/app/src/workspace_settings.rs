@@ -920,7 +920,7 @@ impl Workspace {
     ) -> impl IntoElement + use<> {
         let horizontal = Self::horizontal_tabs(cx);
         div()
-            .h(theme::H_BAR)
+            .h(crate::handheld::metric(theme::H_BAR))
             .flex_none()
             .flex()
             .items_center()
@@ -1010,6 +1010,59 @@ impl Workspace {
             cx,
         )];
         appearance.extend(material);
+        appearance.push(card(
+            Icon::Density,
+            t!("handheld.mode"),
+            Some(t!("handheld.mode_desc")),
+            choice(
+                "interface-mode",
+                &[
+                    (
+                        crate::handheld::InterfaceMode::Desktop,
+                        t!("handheld.desktop"),
+                    ),
+                    (
+                        crate::handheld::InterfaceMode::Handheld,
+                        t!("handheld.handheld"),
+                    ),
+                ],
+                s.interface_mode,
+                |st, v| st.interface_mode = v,
+                ui,
+            ),
+        ));
+        appearance.push(card(
+            Icon::Density,
+            t!("handheld.controller"),
+            None,
+            switch("handheld-controller", s.controller_enabled, |s| {
+                s.controller_enabled = !s.controller_enabled
+            }),
+        ));
+        appearance.push(card(
+            Icon::Density,
+            t!("handheld.hints"),
+            None,
+            switch("handheld-hints", s.controller_hints, |s| {
+                s.controller_hints = !s.controller_hints
+            }),
+        ));
+        let binding_rows = handheld_binding_rows(s, ui);
+        appearance.push(expander(
+            "handheld-bindings",
+            Icon::Density,
+            t!("handheld.bindings"),
+            t!("handheld.bindings_desc"),
+            text_summary(t!("handheld.bindings_count").into_owned()),
+            page.expanded.contains("handheld-bindings"),
+            div()
+                .flex()
+                .flex_col()
+                .gap(theme::S_8)
+                .children(binding_rows)
+                .into_any_element(),
+            cx,
+        ));
         appearance.extend([
             expander(
                 "accent",
@@ -2002,7 +2055,7 @@ pub(super) fn choice_with<T: Copy + PartialEq + 'static>(
         .id(id)
         .debug_selector(move || id.to_owned())
         .a11y_combo(label.clone(), open)
-        .h(theme::H_CTL)
+        .h(crate::handheld::metric(theme::H_CTL))
         .min_w(DROPDOWN_MIN_W)
         .pl(theme::S_12)
         .pr(theme::S_8)
@@ -2086,7 +2139,7 @@ pub(super) fn choice_with<T: Copy + PartialEq + 'static>(
                 .aria_position_in_set(ix)
                 // Keep row height fixed when the list scrolls.
                 .flex_none()
-                .h(theme::H_CTL)
+                .h(crate::handheld::metric(theme::H_CTL))
                 .pl(theme::S_8)
                 .pr(theme::S_16)
                 .flex()
@@ -2133,7 +2186,8 @@ pub(super) fn choice_with<T: Copy + PartialEq + 'static>(
     let count = options.len();
     let list = if long {
         // Only the rows in view are built, each in its own font.
-        let height = (theme::H_CTL * count as f32).min(DROPDOWN_MAX_H - theme::S_8);
+        let height =
+            (crate::handheld::metric(theme::H_CTL) * count as f32).min(DROPDOWN_MAX_H - theme::S_8);
         div()
             .w(FONT_LIST_W)
             .child(
@@ -2197,7 +2251,7 @@ pub(super) fn choice_with<T: Copy + PartialEq + 'static>(
         .child(
             div()
                 .absolute()
-                .top(theme::H_CTL + theme::S_4)
+                .top(crate::handheld::metric(theme::H_CTL) + theme::S_4)
                 .right_0()
                 .child(menu),
         )
@@ -2660,7 +2714,7 @@ fn accent_body(s: &Settings, input: &Entity<TextInput>, window: &Window, cx: &Ap
     let focused = input.focus_handle(cx).is_focused(window);
     let code = div()
         .w(px(96.))
-        .h(theme::H_CTL_SM)
+        .h(crate::handheld::metric(theme::H_CTL_SM))
         .px(theme::S_8)
         .flex()
         .items_center()
@@ -2877,7 +2931,7 @@ fn background_body(
     let focused = input.focus_handle(cx).is_focused(window);
     let field = div()
         .w_full()
-        .h(theme::H_CTL)
+        .h(crate::handheld::metric(theme::H_CTL))
         .px(theme::S_8)
         .flex()
         .items_center()
@@ -3376,7 +3430,7 @@ pub(super) fn text_button(
         .id(id)
         .debug_selector(move || id.to_owned())
         .a11y_button(label.clone())
-        .h(theme::H_CTL_SM)
+        .h(crate::handheld::metric(theme::H_CTL_SM))
         .px(theme::S_12)
         .flex()
         .items_center()
@@ -3734,7 +3788,7 @@ fn network_row(
     let apply = std::rc::Rc::new(apply);
     let button = div()
         .id(id)
-        .h(theme::H_CTL_SM)
+        .h(crate::handheld::metric(theme::H_CTL_SM))
         .px(theme::S_12)
         .flex()
         .items_center()
@@ -3773,4 +3827,57 @@ fn network_row(
         )
         .child(div().flex_none().child(button))
         .into_any_element()
+}
+
+fn handheld_binding_rows(s: &Settings, ui: &Ui) -> Vec<AnyElement> {
+    use crate::handheld_input::{CONTROLS, HandheldAction};
+    const IDS: [&str; 12] = [
+        "bind-a",
+        "bind-b",
+        "bind-x",
+        "bind-y",
+        "bind-lb",
+        "bind-rb",
+        "bind-lt",
+        "bind-rt",
+        "bind-menu",
+        "bind-view",
+        "bind-ls",
+        "bind-rs",
+    ];
+    let options: Vec<_> = HandheldAction::ALL
+        .iter()
+        .map(|(action, key)| (*action, t!(&format!("handheld.action.{key}"))))
+        .collect();
+    let mut rows: Vec<_> = CONTROLS
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(index, control)| {
+            card(
+                Icon::Density,
+                control.label,
+                None,
+                choice(
+                    IDS[index],
+                    &options,
+                    control.action(&s.controller_bindings),
+                    move |settings, action| {
+                        settings
+                            .controller_bindings
+                            .insert(control.key.to_owned(), action.key().to_owned());
+                    },
+                    ui,
+                ),
+            )
+        })
+        .collect();
+    rows.push(text_button(
+        "reset-handheld-bindings",
+        t!("handheld.reset_bindings"),
+        |_, _, cx| {
+            set(cx, |s| s.controller_bindings.clear());
+        },
+    ));
+    rows
 }

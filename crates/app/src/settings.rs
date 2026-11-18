@@ -411,6 +411,10 @@ pub(crate) struct Settings {
     pub(crate) recent: Vec<PathBuf>,
     pub(crate) tab_layout: TabLayout,
     pub(crate) density: Density,
+    pub(crate) interface_mode: crate::handheld::InterfaceMode,
+    pub(crate) controller_enabled: bool,
+    pub(crate) controller_hints: bool,
+    pub(crate) controller_bindings: crate::handheld_input::Bindings,
     /// Preview pane on the right.
     pub(crate) preview_pane: bool,
     /// Space hands the item to QuickLook (QL-Win) instead of Arke's Quick Look (offered only
@@ -587,6 +591,10 @@ impl Default for Settings {
             recent: Vec::new(),
             tab_layout: TabLayout::default(),
             density: Density::default(),
+            interface_mode: crate::handheld::InterfaceMode::Desktop,
+            controller_enabled: true,
+            controller_hints: true,
+            controller_bindings: crate::handheld_input::Bindings::new(),
             preview_pane: false,
             space_quicklook: false,
             global_search: false,

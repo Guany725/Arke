@@ -31,6 +31,9 @@ use crate::palette::{Candidate, LocationPalette, PaletteEvent, Source, Target};
 use crate::settings::{SettingsStore, TabLayout};
 use crate::theme::{self, UiFont as _};
 
+#[path = "workspace_handheld.rs"]
+mod handheld;
+
 #[path = "workspace_backup.rs"]
 mod backup;
 #[path = "workspace_home.rs"]
@@ -295,6 +298,11 @@ impl Render for DraggedTab {
     reason = "UI flags are independent (resizing, dragging, shelf open, ...) and don't fit a state machine"
 )]
 pub(crate) struct Workspace {
+    handheld_task: Option<gpui::Task<()>>,
+    handheld_focus: FocusHandle,
+    handheld_region: crate::handheld_focus::Region,
+    handheld_index: usize,
+    handheld_scroll: gpui::ScrollHandle,
     services: Services,
     tabs: Vec<Tab>,
     pub(crate) active: usize,
@@ -601,6 +609,7 @@ impl Workspace {
             this.sync_accent_input(window, cx);
             this.start_from_settings(&store, window, cx);
             this.sync_nav_buttons(cx);
+            this.sync_handheld(window, cx);
             cx.notify();
         });
         // Saved workspaces show in the sidebar and Ctrl+T.
@@ -614,6 +623,11 @@ impl Workspace {
             this.remember_bounds(window, cx);
         });
         let mut this = Self {
+            handheld_task: None,
+            handheld_focus: cx.focus_handle(),
+            handheld_region: crate::handheld_focus::Region::Files,
+            handheld_index: 0,
+            handheld_scroll: gpui::ScrollHandle::new(),
             closed: Vec::new(),
             services,
             tabs: Vec::new(),
@@ -672,6 +686,7 @@ impl Workspace {
         }
         // The first switch to another tab is a step back to this one.
         this.note_active(cx);
+        this.sync_handheld(window, cx);
         this
     }
 
@@ -1834,7 +1849,7 @@ impl Workspace {
                 .id("pane-gutter")
                 .group("pane-gutter")
                 .absolute()
-                .top(theme::H_BAR)
+                .top(crate::handheld::metric(theme::H_BAR))
                 .bottom(theme::S_8)
                 .left(-theme::S_12 + px(2.))
                 .w(theme::S_12)
@@ -1880,7 +1895,7 @@ impl Workspace {
             Some(
                 div()
                     .absolute()
-                    .top(theme::H_BAR)
+                    .top(crate::handheld::metric(theme::H_BAR))
                     .bottom(theme::S_8)
                     .right(theme::S_8)
                     .w(shared.width)
@@ -1930,9 +1945,9 @@ impl Workspace {
                 .id("split-drop-zone")
                 .absolute()
                 .top(if Self::horizontal_tabs(cx) {
-                    theme::H_BAR + theme::H_BAR
+                    crate::handheld::metric(theme::H_BAR) + crate::handheld::metric(theme::H_BAR)
                 } else {
-                    theme::H_BAR
+                    crate::handheld::metric(theme::H_BAR)
                 })
                 .bottom(theme::S_8)
                 .right(theme::S_8)
@@ -2144,6 +2159,11 @@ impl Render for Workspace {
             })
             .into_any_element()
         };
+        let left = if crate::handheld::enabled() {
+            self.render_handheld_sidebar(cx)
+        } else {
+            left
+        };
         let body = div()
             .flex()
             .flex_1()
@@ -2169,6 +2189,7 @@ impl Render for Workspace {
             });
         div()
             .id("workspace")
+            .track_focus(&self.handheld_focus)
             .key_context("Workspace")
             .relative()
             .size_full()
@@ -2291,7 +2312,9 @@ impl Render for Workspace {
                 }),
             )
             .when(horizontal, |d| d.child(self.render_tab_strip(window, cx)))
+            .children(self.render_handheld_toolbar(cx))
             .child(body)
+            .children(self.render_handheld_hints(window, cx))
             .children(self.render_split_drop_zone(cx))
             // Horizontal tabs: the pin zone floats under the start of the strip, where the pinned
             // tabs are, without moving the tabs.
@@ -2302,7 +2325,7 @@ impl Render for Workspace {
                     div()
                         .occlude()
                         .absolute()
-                        .top(theme::H_BAR + theme::S_4)
+                        .top(crate::handheld::metric(theme::H_BAR) + theme::S_4)
                         .left(theme::S_8)
                         .w(theme::SIDEBAR_W - theme::S_16)
                         .rounded(theme::R_8)
@@ -2404,7 +2427,7 @@ impl Workspace {
         };
         div()
             .w(theme::SIDEBAR_W)
-            .h(theme::H_BAR)
+            .h(crate::handheld::metric(theme::H_BAR))
             .flex_none()
             .flex()
             .items_center()
@@ -2483,7 +2506,7 @@ impl Workspace {
             .a11y(gpui::Role::TabList, t!("sidebar.tabs"))
             // Dropping a tab between tabs or on the empty space to the right moves it to the end.
             .on_drop(cx.listener(Self::drop_tab_at_end))
-            .h(theme::H_BAR)
+            .h(crate::handheld::metric(theme::H_BAR))
             .pr(theme::S_8)
             .flex_none()
             .flex()
@@ -2518,7 +2541,7 @@ impl Workspace {
                     .id("strip-new-tab")
                     .a11y_button(t!("sidebar.new_tab"))
                     .aria_keyshortcuts("Ctrl+T")
-                    .size(theme::H_CTL)
+                    .size(crate::handheld::metric(theme::H_CTL))
                     .flex()
                     .flex_none()
                     .items_center()

@@ -346,7 +346,7 @@ pub(crate) fn order_keys(order: &[Col]) -> Vec<String> {
 
 /// Apply settings; redraws all windows on change.
 pub(crate) fn apply(settings: &Settings) {
-    let mut changed = false;
+    let mut changed = crate::handheld::set_mode(settings.interface_mode);
     for (slot, value) in [
         (&FULL_DATES, settings.full_dates),
         (&SHOW_MODIFIED, settings.show_modified),

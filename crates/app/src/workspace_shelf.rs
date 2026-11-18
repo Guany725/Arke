@@ -148,7 +148,7 @@ impl Workspace {
             .a11y(gpui::Role::Button, t!("shelf.title"))
             .aria_expanded(open)
             .relative()
-            .h(theme::H_ROW)
+            .h(crate::handheld::row_metric(theme::H_ROW))
             .flex()
             .flex_none()
             .items_center()
@@ -264,7 +264,7 @@ impl Workspace {
         if held.is_empty() {
             out.push(
                 div()
-                    .h(theme::H_ROW)
+                    .h(crate::handheld::row_metric(theme::H_ROW))
                     .flex()
                     .flex_none()
                     .items_center()
@@ -345,7 +345,7 @@ impl Workspace {
                 crate::a11y::item_label(name, &[folder.as_str(), state.as_str()])
             })
             .group(group.clone())
-            .h(theme::H_ROW)
+            .h(crate::handheld::row_metric(theme::H_ROW))
             .flex()
             .flex_none()
             .items_center()

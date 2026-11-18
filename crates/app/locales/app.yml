@@ -4359,3 +4359,293 @@ report.refresh:
   en: "Refresh"
   zh-TW: "重新整理"
   zh-CN: "刷新"
+
+handheld.mode:
+  en: "Interface mode"
+  zh-TW: "介面模式"
+  zh-CN: "界面模式"
+
+handheld.mode_desc:
+  en: "Handheld: larger controls and native controller navigation"
+  zh-TW: "掌機：加大控制項與手把導覽"
+  zh-CN: "掌机：放大控件与原生手柄导航"
+
+handheld.desktop:
+  en: "Desktop"
+  zh-TW: "桌面"
+  zh-CN: "桌面"
+
+handheld.handheld:
+  en: "Handheld"
+  zh-TW: "掌機"
+  zh-CN: "掌机"
+
+handheld.controller:
+  en: "Controller input"
+  zh-TW: "手把輸入"
+  zh-CN: "手柄输入"
+
+handheld.hints:
+  en: "Controller hints"
+  zh-TW: "手把按鍵提示"
+  zh-CN: "手柄按键提示"
+
+handheld.hint_files:
+  en: "A Open   X Actions   Y Preview   B Parent   LB/RB Tabs   View Region"
+  zh-TW: "A 開啟   X 操作   Y 預覽   B 上層   LB/RB 分頁   View 區域"
+  zh-CN: "A 打开   X 操作   Y 预览   B 上级   LB/RB 标签   View 区域"
+
+handheld.hint_menu:
+  en: "↑↓ Choose   A Confirm   B Close"
+  zh-TW: "↑↓ 選擇   A 確認   B 關閉"
+  zh-CN: "↑↓ 选择   A 确认   B 关闭"
+
+handheld.hint_preview:
+  en: "←→ PDF page   Y/B Close preview"
+  zh-TW: "←→ PDF 頁面   Y/B 關閉預覽"
+  zh-CN: "←→ PDF 翻页   Y/B 关闭预览"
+
+handheld.hint_input:
+  en: "A Confirm   B Cancel · Use the Windows touch keyboard to type"
+  zh-TW: "A 確認   B 取消 · 使用 Windows 觸控鍵盤輸入"
+  zh-CN: "A 确认   B 取消 · 使用 Windows 触摸键盘输入"
+
+handheld.hint_page:
+  en: "B Return   View Region   LB/RB Tabs"
+  zh-TW: "B 返回   View 區域   LB/RB 分頁"
+  zh-CN: "B 返回   View 区域   LB/RB 标签"
+
+handheld.hint_region:
+  en: "Directions Choose   A Activate   B Files   View Region"
+  zh-TW: "方向鍵 選擇   A 確認   B 檔案   View 區域"
+  zh-CN: "方向键 选择   A 确认   B 文件   View 区域"
+
+handheld.up:
+  en: "Parent"
+  zh-TW: "上層"
+  zh-CN: "上级"
+
+handheld.path:
+  en: "Address"
+  zh-TW: "位址"
+  zh-CN: "地址"
+
+handheld.search:
+  en: "Search"
+  zh-TW: "搜尋"
+  zh-CN: "搜索"
+
+handheld.details:
+  en: "Details"
+  zh-TW: "詳細資料"
+  zh-CN: "详细信息"
+
+handheld.icons:
+  en: "Icons"
+  zh-TW: "圖示"
+  zh-CN: "图标"
+
+handheld.columns:
+  en: "Columns"
+  zh-TW: "分欄"
+  zh-CN: "分栏"
+
+handheld.preview:
+  en: "Preview"
+  zh-TW: "預覽"
+  zh-CN: "预览"
+
+handheld.settings:
+  en: "Settings"
+  zh-TW: "設定"
+  zh-CN: "设置"
+
+handheld.bindings:
+  en: "Controller bindings"
+  zh-TW: "手把按鍵綁定"
+  zh-CN: "手柄按键绑定"
+
+handheld.bindings_desc:
+  en: "Bindings apply to file browsing. Menus, dialogs and region navigation keep A confirm / B back. Direction pad navigation stays available."
+  zh-TW: "綁定適用於檔案瀏覽。選單、對話框和區域導覽保留 A 確認／B 返回，方向鍵仍可導覽。"
+  zh-CN: "绑定适用于文件浏览。菜单、对话框和区域导航保留 A 确认／B 返回，方向键仍可导航。"
+
+handheld.bindings_count:
+  en: "12 buttons"
+  zh-TW: "12 個按鍵"
+  zh-CN: "12 个按键"
+
+handheld.reset_bindings:
+  en: "Restore default bindings"
+  zh-TW: "還原預設綁定"
+  zh-CN: "恢复默认绑定"
+
+handheld.shelf_removed:
+  en: "Removed selected items from the shelf; files stay in place"
+  zh-TW: "已從暫存架移除選取項目，原始檔案保留"
+  zh-CN: "已从暂存架移除选中项目，原始文件保留"
+
+handheld.action.disabled:
+  en: "Unassigned"
+  zh-TW: "未指派"
+  zh-CN: "不绑定"
+
+handheld.action.open:
+  en: "Open / confirm"
+  zh-TW: "開啟／確認"
+  zh-CN: "打开／确认"
+
+handheld.action.back:
+  en: "Back / close"
+  zh-TW: "返回／關閉"
+  zh-CN: "返回／关闭"
+
+handheld.action.parent:
+  en: "Parent folder"
+  zh-TW: "上一層資料夾"
+  zh-CN: "上一级文件夹"
+
+handheld.action.preview:
+  en: "Quick Look"
+  zh-TW: "快速預覽"
+  zh-CN: "快速预览"
+
+handheld.action.menu:
+  en: "Actions menu"
+  zh-TW: "操作選單"
+  zh-CN: "操作菜单"
+
+handheld.action.cut:
+  en: "Cut"
+  zh-TW: "剪下"
+  zh-CN: "剪切"
+
+handheld.action.copy:
+  en: "Copy"
+  zh-TW: "複製"
+  zh-CN: "复制"
+
+handheld.action.rename:
+  en: "Rename"
+  zh-TW: "重新命名"
+  zh-CN: "重命名"
+
+handheld.action.delete:
+  en: "Delete"
+  zh-TW: "刪除"
+  zh-CN: "删除"
+
+handheld.action.paste:
+  en: "Paste"
+  zh-TW: "貼上"
+  zh-CN: "粘贴"
+
+handheld.action.pin:
+  en: "Pin / unpin folder"
+  zh-TW: "固定／取消固定資料夾"
+  zh-CN: "固定／取消固定文件夹"
+
+handheld.action.shelf_add:
+  en: "Add selection to shelf"
+  zh-TW: "選取項目加入暫存架"
+  zh-CN: "选中项目放到暂存架"
+
+handheld.action.shelf_remove:
+  en: "Remove selection from shelf"
+  zh-TW: "選取項目移出暫存架"
+  zh-CN: "选中项目移出暂存架"
+
+handheld.action.shelf_copy_here:
+  en: "Copy shelf items here"
+  zh-TW: "暫存架項目複製到此處"
+  zh-CN: "暂存架项目复制到此处"
+
+handheld.action.shelf_move_here:
+  en: "Move shelf items here"
+  zh-TW: "暫存架項目移動到此處"
+  zh-CN: "暂存架项目移动到此处"
+
+handheld.action.select_toggle:
+  en: "Toggle current selection"
+  zh-TW: "選取／取消目前項目"
+  zh-CN: "选择／取消当前项目"
+
+handheld.action.select_all:
+  en: "Select all"
+  zh-TW: "全選"
+  zh-CN: "全选"
+
+handheld.action.select_clear:
+  en: "Clear selection"
+  zh-TW: "取消選取"
+  zh-CN: "取消选择"
+
+handheld.action.new_folder:
+  en: "New folder"
+  zh-TW: "新增資料夾"
+  zh-CN: "新建文件夹"
+
+handheld.action.refresh:
+  en: "Refresh"
+  zh-TW: "重新整理"
+  zh-CN: "刷新"
+
+handheld.action.address:
+  en: "Edit address"
+  zh-TW: "編輯位址"
+  zh-CN: "编辑地址"
+
+handheld.action.search:
+  en: "Search"
+  zh-TW: "搜尋"
+  zh-CN: "搜索"
+
+handheld.action.settings:
+  en: "Settings"
+  zh-TW: "設定"
+  zh-CN: "设置"
+
+handheld.action.previous_tab:
+  en: "Previous tab"
+  zh-TW: "上一個分頁"
+  zh-CN: "上一个标签"
+
+handheld.action.next_tab:
+  en: "Next tab"
+  zh-TW: "下一個分頁"
+  zh-CN: "下一个标签"
+
+handheld.action.page_up:
+  en: "Page up"
+  zh-TW: "上一頁"
+  zh-CN: "向上翻页"
+
+handheld.action.page_down:
+  en: "Page down"
+  zh-TW: "下一頁"
+  zh-CN: "向下翻页"
+
+handheld.action.region:
+  en: "Switch region"
+  zh-TW: "切換區域"
+  zh-CN: "切换区域"
+
+handheld.action.up:
+  en: "Navigate up"
+  zh-TW: "向上導覽"
+  zh-CN: "向上导航"
+
+handheld.action.down:
+  en: "Navigate down"
+  zh-TW: "向下導覽"
+  zh-CN: "向下导航"
+
+handheld.action.left:
+  en: "Navigate left"
+  zh-TW: "向左導覽"
+  zh-CN: "向左导航"
+
+handheld.action.right:
+  en: "Navigate right"
+  zh-TW: "向右導覽"
+  zh-CN: "向右导航"

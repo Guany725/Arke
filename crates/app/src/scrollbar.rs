@@ -22,6 +22,13 @@ use crate::theme;
 
 /// Hover-sensitive width (the thumb is drawn at its right edge)
 const TRACK_W: Pixels = px(12.);
+fn track_width() -> Pixels {
+    if crate::handheld::enabled() {
+        px(24.)
+    } else {
+        TRACK_W
+    }
+}
 /// Thumb width: thin and widened
 const THUMB_THIN: f32 = 2.;
 const THUMB_WIDE: f32 = 6.;
@@ -116,7 +123,7 @@ pub(crate) fn scrollbar(handle: ScrollHandle, drag: ScrollbarDrag) -> impl IntoE
         .top_0()
         .bottom_0()
         .right_0()
-        .w(TRACK_W)
+        .w(track_width())
 }
 
 /// Sideways scrollbar along the bottom of a list whose rows are wider than it (Details columns),
@@ -126,9 +133,9 @@ pub(crate) fn hscrollbar(handle: ScrollHandle, drag: ScrollbarDrag) -> impl Into
     bar(handle, drag, Axis::Horizontal)
         .absolute()
         .left_0()
-        .right(TRACK_W)
+        .right(track_width())
         .bottom_0()
-        .h(TRACK_W)
+        .h(track_width())
 }
 
 /// A scroll area inside a scrolling page (the report text in Settings), with its scrollbar.

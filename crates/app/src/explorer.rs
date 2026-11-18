@@ -25,6 +25,9 @@ use gpui::{
     UniformListScrollHandle, Window, actions, prelude::*, px,
 };
 
+#[path = "explorer_handheld.rs"]
+mod handheld;
+
 #[path = "explorer_menu.rs"]
 mod menu;
 #[cfg(test)]
@@ -603,6 +606,9 @@ struct Filtered {
     reason = "UI flags are independent (editing path, loading, show hidden, ...) and don't fit a state machine"
 )]
 pub(crate) struct Explorer {
+    handheld_press: Option<Task<()>>,
+    handheld_press_origin: gpui::Point<gpui::Pixels>,
+    handheld_press_opened: bool,
     pub(crate) services: Services,
     events_tx: flume::Sender<AppEvent>,
     dir_service: DirService,
@@ -1089,6 +1095,9 @@ impl Explorer {
             preview_pane: settings.read(cx).settings.preview_pane,
             preview_cue: crate::motion::Cue::default(),
             view_cue: crate::motion::Cue::default(),
+            handheld_press: None,
+            handheld_press_origin: gpui::Point::default(),
+            handheld_press_opened: false,
             quick_look: false,
             closing_quick_look: None,
             confirm: None,
@@ -2667,7 +2676,11 @@ impl Explorer {
     /// Height taken outside the list: top bar, context bar, column header, bottom margin and list
     /// padding.
     fn list_chrome() -> Pixels {
-        theme::H_BAR + theme::H_CTX + theme::H_HEADER + theme::S_8 + theme::S_8
+        crate::handheld::metric(theme::H_BAR)
+            + crate::handheld::metric(theme::H_CTX)
+            + theme::H_HEADER
+            + theme::S_8
+            + theme::S_8
     }
 
     fn on_path_event(
@@ -2757,7 +2770,10 @@ impl Explorer {
     }
 
     /// Split panes are half width, so they use compact density.
-    pub(crate) const fn row_height(&self) -> Pixels {
+    pub(crate) fn row_height(&self) -> Pixels {
+        if crate::handheld::enabled() {
+            return px(52.);
+        }
         if self.pane.split {
             return theme::H_ROW_COMPACT;
         }
@@ -2775,6 +2791,11 @@ impl Explorer {
 
     fn page_rows(&self, window: &Window) -> usize {
         let height: Pixels = window.viewport_size().height - Self::list_chrome();
+        let height = if crate::handheld::enabled() {
+            height - px(96.)
+        } else {
+            height
+        };
         ((height / self.row_height()).floor() as usize).max(1)
     }
 
@@ -2996,6 +3017,7 @@ impl Explorer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.start_handheld_press(ix, event.position, window, cx);
         let list_was_focused = self.list_focus.is_focused(window);
         let on_name = self.name_pressed.take() == Some(ix);
         window.focus(&self.list_focus, cx);

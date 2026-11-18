@@ -224,7 +224,11 @@ pub(crate) fn zoom(view: ViewMode, size: IconSize, steps: i32) -> Option<ZoomTar
 impl Explorer {
     /// The grid's tile metrics at the current icon size.
     pub(crate) fn tile(&self) -> theme::Tile {
-        self.icon_size.tile()
+        if crate::handheld::enabled() {
+            self.icon_size.max(IconSize::from_px(96.)).tile()
+        } else {
+            self.icon_size.tile()
+        }
     }
 
     /// The user picked an icon size: show Icons at that size and remember it for this folder.

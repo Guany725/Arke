@@ -918,6 +918,19 @@ impl Explorer {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         self.release_shell_menu();
+        // Desktop's icon-only edit strip has no keyboard cursor. Expose the same commands
+        // as regular rows for gamepad navigation, preserving every command's enabled state.
+        let entries = if crate::handheld::enabled() {
+            entries
+                .into_iter()
+                .flat_map(|entry| match entry {
+                    MenuEntry::Actions(items) => items.into_iter().map(MenuEntry::Item).collect(),
+                    other => vec![other],
+                })
+                .collect()
+        } else {
+            entries
+        };
         let mut menu = ContextMenu::new(position, entries, focus, targets);
         menu.shell_slot = menu
             .entries
@@ -1590,23 +1603,30 @@ impl Explorer {
             C::ShellPart { session, id } => {
                 self.invoke_shell_menu(session, id, menu.position, window);
             }
-            C::TogglePin => {
-                let path = match targets.first() {
-                    Some((path, true)) => Some(path.clone()),
-                    Some(_) => None,
-                    None => self.current_path().map(PathBuf::from),
-                };
-                if let Some(path) = path {
-                    let places = self.places.clone();
-                    let mut went = None;
-                    SettingsStore::global(cx).update(cx, |s, cx| {
-                        s.update(|st| went = st.toggle_pin(&path, &places), cx);
-                    });
-                    if went == Some(crate::settings::PinPlace::List) {
-                        self.notice = Some(t!("sidebar.pinned_to_list").into_owned());
-                        crate::workspace::flash_pin(path);
-                    }
-                }
+            C::TogglePin => self.toggle_pin_targets(&targets, cx),
+        }
+        cx.notify();
+    }
+
+    pub(super) fn toggle_pin_targets(
+        &mut self,
+        targets: &[(PathBuf, bool)],
+        cx: &mut Context<Self>,
+    ) {
+        let path = match targets.first() {
+            Some((path, true)) => Some(path.clone()),
+            Some(_) => None,
+            None => self.current_path().map(PathBuf::from),
+        };
+        if let Some(path) = path {
+            let places = self.places.clone();
+            let mut went = None;
+            SettingsStore::global(cx).update(cx, |s, cx| {
+                s.update(|st| went = st.toggle_pin(&path, &places), cx);
+            });
+            if went == Some(crate::settings::PinPlace::List) {
+                self.notice = Some(t!("sidebar.pinned_to_list").into_owned());
+                crate::workspace::flash_pin(path);
             }
         }
         cx.notify();
@@ -2698,7 +2718,7 @@ impl Explorer {
             .when_some(shortcut, gpui::StatefulInteractiveElement::aria_keyshortcuts)
             .group(group)
             .relative()
-            .h(theme::H_CTL_SM + theme::S_4)
+            .h(crate::handheld::metric(theme::H_CTL_SM) + theme::S_4)
             .mx(theme::S_4)
             .px(theme::S_8)
             .flex()

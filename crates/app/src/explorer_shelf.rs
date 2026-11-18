@@ -12,7 +12,7 @@ use crate::shelf::ShelfStore;
 
 impl Explorer {
     /// Selected items (or the search result under the cursor) with whether each is a folder.
-    fn shelf_targets(&self) -> Vec<(PathBuf, bool)> {
+    pub(super) fn shelf_targets(&self) -> Vec<(PathBuf, bool)> {
         if self.search_mode {
             return self
                 .search_hit(self.search_cursor)
@@ -33,6 +33,26 @@ impl Explorer {
     /// Ctrl+Shift+A and "Add to shelf": puts the selection on the shelf (paths only).
     pub(super) fn add_to_shelf(&mut self, _: &AddToShelf, _: &mut Window, cx: &mut Context<Self>) {
         self.add_selection_to_shelf(cx);
+    }
+
+    pub(super) fn remove_selection_from_shelf(&mut self, cx: &mut Context<Self>) {
+        let targets = self.shelf_targets();
+        let store = ShelfStore::global(cx);
+        if !targets
+            .iter()
+            .any(|(path, _)| store.read(cx).shelf().contains(path))
+        {
+            self.notice = Some(t!("shelf.nothing_to_do").into_owned());
+            cx.notify();
+            return;
+        }
+        store.update(cx, |s, cx| {
+            for (path, _) in &targets {
+                s.remove(path, cx);
+            }
+        });
+        self.notice = Some(t!("handheld.shelf_removed").into_owned());
+        cx.notify();
     }
 
     fn add_selection_to_shelf(&mut self, cx: &mut Context<Self>) {

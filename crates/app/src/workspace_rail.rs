@@ -165,7 +165,7 @@ impl Workspace {
             .id("sidebar-toggle")
             .a11y_button(label.clone())
             .aria_keyshortcuts("Ctrl+B")
-            .size(theme::H_CTL)
+            .size(crate::handheld::metric(theme::H_CTL))
             .flex()
             .flex_none()
             .items_center()
@@ -233,7 +233,7 @@ impl Workspace {
             .when(!horizontal, |d| {
                 d.child(
                     div()
-                        .h(theme::H_BAR)
+                        .h(crate::handheld::metric(theme::H_BAR))
                         .flex_none()
                         .flex()
                         .items_center()

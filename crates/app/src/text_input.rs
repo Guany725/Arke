@@ -88,6 +88,7 @@ pub(crate) struct TextInput {
     is_selecting: bool,
     /// Password field: drawn as dots, copy and cut disabled
     masked: bool,
+    keyboard_focused: bool,
 }
 
 /// Glyph drawn for each character in a password field
@@ -109,6 +110,7 @@ impl TextInput {
             scroll_x: Pixels::ZERO,
             is_selecting: false,
             masked: false,
+            keyboard_focused: false,
         }
     }
 
@@ -860,7 +862,12 @@ impl TextInput {
 }
 
 impl Render for TextInput {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let focused = crate::handheld::enabled() && self.focus_handle.is_focused(window);
+        if focused && !self.keyboard_focused {
+            crate::handheld::show_keyboard(window);
+        }
+        self.keyboard_focused = focused;
         let a11y = crate::a11y::active().then(|| self.a11y_text());
         div()
             .id("text-input")

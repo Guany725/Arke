@@ -94,7 +94,7 @@ impl Explorer {
             .flex_none()
             .items_center()
             .gap(theme::S_2)
-            .h(theme::H_BAR)
+            .h(crate::handheld::metric(theme::H_BAR))
             .pr(theme::S_8)
             .when(nav_here, |d| {
                 d.child(crate::spring::back_target(
@@ -195,7 +195,7 @@ impl Explorer {
             }))
             .overflow_hidden()
             .when(collapsed, |d| d.tooltip_below(t!("filter.placeholder")))
-            .h(theme::H_CTL)
+            .h(crate::handheld::metric(theme::H_CTL))
             .flex()
             .items_center()
             .gap(theme::S_6)
@@ -241,13 +241,13 @@ impl Explorer {
         div()
             .relative()
             .w(if collapsed {
-                theme::H_CTL
+                crate::handheld::metric(theme::H_CTL)
             } else if self.pane.split {
                 px(150.)
             } else {
                 theme::FILTER_W
             })
-            .min_w(theme::H_CTL)
+            .min_w(crate::handheld::metric(theme::H_CTL))
             .when(!self.pane.split, gpui::Styled::flex_none)
             .mr(theme::S_8)
             .child(filter_box)
@@ -304,7 +304,7 @@ impl Explorer {
             .flex_none()
             .items_center()
             .gap(theme::S_4)
-            .h(theme::H_CTX)
+            .h(crate::handheld::metric(theme::H_CTX))
             .pl(theme::S_20)
             .pr(theme::S_12)
             .child(left)
@@ -760,6 +760,10 @@ impl Explorer {
             )
             // Click without drag: in a multi-selection, select only this item.
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                if this.handheld_press_opened {
+                    this.handheld_press_opened = false;
+                    return;
+                }
                 if this.on_row_click(ix, event, cx) {
                     return;
                 }
@@ -772,6 +776,8 @@ impl Explorer {
                     }
                 }
             }))
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, _| this.handheld_press = None))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, _| this.handheld_press = None))
             // Drop: folders
             .when_some(drop_dir, move |d, dir| {
                 let external = dir.clone();
@@ -799,7 +805,7 @@ impl Explorer {
             .rounded(theme::R_8)
             .border_1()
             .border_color(if is_cursor && focused {
-                theme::signal_line()
+                if crate::handheld::enabled() { theme::signal() } else { theme::signal_line() }
             } else {
                 theme::clear()
             })
@@ -825,6 +831,10 @@ impl Explorer {
             )
             // The first moves of a right drag, before the window-wide listener exists.
             .on_mouse_move(cx.listener(move |this, event: &gpui::MouseMoveEvent, window, cx| {
+                let delta = event.position - this.handheld_press_origin;
+                if delta.x.abs() > px(8.) || delta.y.abs() > px(8.) {
+                    this.handheld_press = None;
+                }
                 if this.right_press.is_some() {
                     this.right_press_moved(event, window, cx);
                 }
@@ -2217,7 +2227,7 @@ pub(crate) fn ghost_button_turned(
         .id(id)
         .a11y_button(tip.clone())
         .a11y_disabled(!enabled)
-        .size(theme::H_CTL)
+        .size(crate::handheld::metric(theme::H_CTL))
         .flex()
         .flex_none()
         .items_center()
@@ -2261,7 +2271,7 @@ fn action_button(
         .id(id)
         .a11y_button(label.clone())
         .group(id)
-        .h(theme::H_CTL_SM)
+        .h(crate::handheld::metric(theme::H_CTL_SM))
         .px(theme::S_8)
         .flex()
         .flex_none()
@@ -2306,7 +2316,7 @@ fn clear_selection_button(
     div()
         .id("sel-clear")
         .a11y_button(t!("sel.clear"))
-        .h(theme::H_CTL_SM)
+        .h(crate::handheld::metric(theme::H_CTL_SM))
         .px(theme::S_8)
         .flex()
         .flex_none()
@@ -2339,7 +2349,7 @@ fn outline_button(
     div()
         .id(id)
         .a11y_lazy(gpui::Role::Button, || label.to_string())
-        .h(theme::H_CTL_SM)
+        .h(crate::handheld::metric(theme::H_CTL_SM))
         .px(theme::S_12)
         .flex()
         .flex_none()
@@ -2380,7 +2390,7 @@ fn preview_button(on: bool, cx: &mut Context<Explorer>) -> impl IntoElement + us
     div()
         .id("toggle-preview")
         .a11y_toggle(t!("ctx.preview"), on)
-        .h(theme::H_CTL_SM)
+        .h(crate::handheld::metric(theme::H_CTL_SM))
         .px(theme::S_6)
         .flex()
         .flex_none()
@@ -2422,7 +2432,7 @@ fn split_button(
             },
             split,
         )
-        .h(theme::H_CTL_SM)
+        .h(crate::handheld::metric(theme::H_CTL_SM))
         .px(theme::S_6)
         .flex()
         .flex_none()
@@ -2460,7 +2470,7 @@ fn peer_button(
 ) -> impl IntoElement {
     div()
         .id(id)
-        .h(theme::H_CTL_SM)
+        .h(crate::handheld::metric(theme::H_CTL_SM))
         .px(theme::S_8)
         .flex()
         // Truncate the folder name when space is short so the button isn't squeezed out.
@@ -2545,7 +2555,7 @@ pub(crate) fn caption_buttons(window: &Window) -> impl IntoElement {
                 _ => t!("window.close"),
             })
             .group(id)
-            .size(theme::H_CTL)
+            .size(crate::handheld::metric(theme::H_CTL))
             .flex()
             .flex_none()
             .items_center()

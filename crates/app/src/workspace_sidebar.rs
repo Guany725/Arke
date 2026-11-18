@@ -103,7 +103,7 @@ pub(super) struct DraggedPin {
 impl Render for DraggedPin {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div()
-            .h(theme::H_ROW)
+            .h(crate::handheld::row_metric(theme::H_ROW))
             .px(theme::S_8)
             .flex()
             .items_center()
@@ -233,7 +233,7 @@ fn section_label(text: impl Into<SharedString>) -> impl IntoElement {
     let text: SharedString = text.into();
     div()
         .flex_none()
-        .h(theme::H_ROW)
+        .h(crate::handheld::row_metric(theme::H_ROW))
         .flex()
         .items_end()
         .px(theme::S_8)
@@ -385,7 +385,7 @@ fn map_drive_button(cx: &mut Context<Workspace>) -> impl IntoElement + use<> {
 fn loading_row(indent: Pixels) -> AnyElement {
     div()
         .flex_none()
-        .h(theme::H_ROW)
+        .h(crate::handheld::row_metric(theme::H_ROW))
         .flex()
         .items_center()
         .pl(indent)
@@ -585,7 +585,7 @@ impl Workspace {
         let list_drop = (pinned.is_empty() && self.dragging_pin).then(|| {
             div()
                 .id("pin-list-drop")
-                .h(theme::H_ROW)
+                .h(crate::handheld::row_metric(theme::H_ROW))
                 .mx(theme::S_4)
                 .flex()
                 .items_center()
@@ -707,7 +707,7 @@ impl Workspace {
                 .when(horizontal, gpui::Styled::flex_1)
                 .when(!horizontal, gpui::Styled::flex_initial)
                 // At least two rows stay visible, so it's clear this part scrolls too.
-                .min_h(theme::H_ROW * 2.),
+                .min_h(crate::handheld::row_metric(theme::H_ROW) * 2.),
         );
         div()
             .id("sidebar")
@@ -777,7 +777,7 @@ impl Workspace {
     /// Height the vertical tab list keeps when the sidebar runs out of room: up to three tabs.
     fn tab_list_min_height(tabs: usize) -> Pixels {
         let shown = tabs.min(3) as f32;
-        (theme::H_ROW + theme::S_2) * shown
+        (crate::handheld::row_metric(theme::H_ROW) + theme::S_2) * shown
     }
 
     /// Drops a tab onto empty space in the tab strip or list: moves it to the end.
@@ -937,7 +937,7 @@ impl Workspace {
             .a11y_button(t!("sidebar.new_tab"))
             .aria_keyshortcuts("Ctrl+T")
             .group("new-tab")
-            .h(theme::H_ROW)
+            .h(crate::handheld::row_metric(theme::H_ROW))
             .flex_none()
             .flex()
             .items_center()
@@ -1157,7 +1157,7 @@ impl Workspace {
                 .aria_selected(here)
                 .when(!leaf, |d| d.aria_expanded(expanded))
                 .relative()
-                .h(theme::H_ROW)
+                .h(crate::handheld::row_metric(theme::H_ROW))
                 .flex()
                 .flex_none()
                 .items_center()
@@ -1630,7 +1630,7 @@ impl Workspace {
                 let action = action.clone();
                 div()
                     .id(("sidebar-menu-item", ix))
-                    .h(theme::H_CTL_SM + theme::S_4)
+                    .h(crate::handheld::metric(theme::H_CTL_SM) + theme::S_4)
                     .mx(theme::S_4)
                     .px(theme::S_8)
                     .flex()
@@ -1798,7 +1798,7 @@ impl Workspace {
                     .id(("tab-half", ix * 2 + pane))
                     .flex_1()
                     .min_w_0()
-                    .h(theme::H_CTL_SM)
+                    .h(crate::handheld::metric(theme::H_CTL_SM))
                     .px(theme::S_6)
                     .flex()
                     .items_center()
@@ -1892,12 +1892,12 @@ impl Workspace {
             .debug_selector(|| format!("tab-{ix}"))
             .group(group.clone())
             .h(if split {
-                theme::H_ROW + theme::S_8
+                crate::handheld::row_metric(theme::H_ROW) + theme::S_8
             } else if tab.pinned {
                 // Pinned tabs are a tighter group at the top.
-                theme::H_ROW_COMPACT
+                crate::handheld::row_metric(theme::H_ROW_COMPACT)
             } else {
-                theme::H_ROW
+                crate::handheld::row_metric(theme::H_ROW)
             })
             .when(tab.pinned, |d| d.text_size(theme::FS_13))
             .flex()

@@ -404,7 +404,7 @@ fn dialog_button(
     div()
         .id(id)
         .a11y_button(label.clone())
-        .h(theme::H_CTL)
+        .h(crate::handheld::metric(theme::H_CTL))
         .px(theme::S_16)
         .flex()
         .items_center()
