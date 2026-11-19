@@ -1,6 +1,7 @@
 # Handheld mode (development implementation)
 
-Baseline: Koimsurai/Arke `907192f5c8ca86e0667d28a54cdcebae5de231d1`.
+Upstream synchronized: Koimsurai/Arke `92ae1e2777f3f8cd1cc6bc8eee386f865ab13328`.
+Original implementation baseline: `907192f5c8ca86e0667d28a54cdcebae5de231d1`.
 
 In Settings > Appearance, choose Handheld interface mode. Controller input and
 the hint bar can be switched independently. Desktop remains the default. Mode
@@ -63,21 +64,22 @@ touch keyboard through InputPane; Windows controls whether it appears.
 
 ## Validation and remaining acceptance work
 
-Standalone production decoder tests: 8 passed. Focus navigation tests: 1 passed.
-The decoder harness omits only the Windows XInput polling function, so these
-tests do not verify device discovery or GPUI integration. Rustfmt and diff
-whitespace checks pass. Settings serialization tests were added but not run.
+GitHub Windows validation passed on 2026-11-19 for executable commit
+`6a7bfcccf3747e1cf3f20f4c8a32946f90e1e10b`:
 
-Full `cargo check -p arke-app --locked` has NOT passed. Offline dependency
-resolution stops at missing `poly1305 0.9.1`; the available machine also lacks
-the complete MSVC/Windows SDK toolchain. No executable or installer is provided.
-Use the upstream documented Windows build environment, then run:
+- `cargo fmt --all --check`
+- `cargo check -p arke-app --locked`
+- `cargo test -p arke-app --locked handheld`: 10 passed, 0 failed;
+  719 unrelated tests filtered out. Includes settings serialization.
+- `cargo build -p arke-app --bin arke --release --locked`
+- Packaging and artifact upload succeeded.
 
-```text
-cargo check -p arke-app --locked
-cargo test -p arke-app --locked handheld
-cargo clippy -p arke-app --locked -- -D warnings
-```
+[Build and download](https://github.com/Guany725/Arke/actions/runs/44466454340).
+Artifact: `Arke-Handheld-Windows-x64`, retained until 2026-12-03.
+The executable is an unsigned development build, not an installer.
+Clippy, the full test suite, application launch and hardware validation were
+not performed. The automated tests do not verify physical XInput devices,
+GPUI interaction, touch behavior or performance.
 
 Before release, check on a Windows 11 handheld:
 
