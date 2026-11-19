@@ -571,6 +571,21 @@ impl Shell for RemoteShell {
     fn covered_at_cursor(&self, owner: Option<isize>) -> bool {
         self.inner.covered_at_cursor(owner)
     }
+    fn drag_threshold(&self, owner: Option<isize>) -> (i32, i32) {
+        self.inner.drag_threshold(owner)
+    }
+    fn press_from_touch(&self) -> bool {
+        self.inner.press_from_touch()
+    }
+    fn begin_window_move(&self, owner: Option<isize>, at: (i32, i32)) {
+        self.inner.begin_window_move(owner, at);
+    }
+    fn double_click_rule(&self, owner: Option<isize>) -> (std::time::Duration, (i32, i32)) {
+        self.inner.double_click_rule(owner)
+    }
+    fn toggle_maximize(&self, owner: Option<isize>) {
+        self.inner.toggle_maximize(owner);
+    }
     fn drag_image(
         &self,
         base: Option<arke_core::thumbs::Thumbnail>,
@@ -609,9 +624,9 @@ impl Shell for RemoteShell {
     fn recycle_purge(
         &self,
         items: &[RecycledItem],
-        owner: Option<isize>,
+        progress: &OpProgress,
     ) -> Result<OpOutcome, ShellError> {
-        self.inner.recycle_purge(items, owner)
+        self.inner.recycle_purge(items, progress)
     }
     fn set_clipboard_files(&self, files: &ClipboardFiles) -> Result<u32, ShellError> {
         if !files.paths.iter().any(|p| remote(p).is_some()) {
@@ -692,6 +707,13 @@ impl Shell for RemoteShell {
     }
     fn release_shell_menu(&self, session: u64) {
         self.inner.release_shell_menu(session);
+    }
+    fn fill_shell_submenu(
+        &self,
+        session: u64,
+        index: u32,
+    ) -> Result<Vec<crate::shell::ShellMenuEntry>, ShellError> {
+        self.inner.fill_shell_submenu(session, index)
     }
     fn shell_menu_handlers(
         &self,

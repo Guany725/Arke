@@ -492,6 +492,10 @@ impl Workspace {
             this.add_to_shelf_from_drop(items, cx);
         }))
         .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
+            // Virtual files aren't anywhere the shelf could point to.
+            if crate::win_virtual_drop::is_virtual(paths.paths()) {
+                return;
+            }
             let (paths, _) = crate::explorer::hold_temp_drop(paths.paths().to_vec());
             let items = paths.into_iter().map(|p| (p, false)).collect();
             this.add_to_shelf_from_drop(items, cx);
@@ -583,7 +587,8 @@ impl Workspace {
                 )
                 .on_click(move |_, window, cx| {
                     view.update(cx, |e, cx| e.go_back(&GoBack, window, cx));
-                }),
+                })
+                .on_mouse_down(MouseButton::Right, Self::history_menu_listener(true, cx)),
             )
             .child(
                 button(
@@ -594,7 +599,8 @@ impl Workspace {
                 )
                 .on_click(move |_, window, cx| {
                     forward_view.update(cx, |e, cx| e.go_forward(&GoForward, window, cx));
-                }),
+                })
+                .on_mouse_down(MouseButton::Right, Self::history_menu_listener(false, cx)),
             )
     }
 

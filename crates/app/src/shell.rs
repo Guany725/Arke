@@ -45,6 +45,15 @@ pub(crate) enum ShellError {
         /// The items that failed, in order.
         failed: Vec<ItemFailure>,
     },
+    /// Cancelled partway, after items had already failed or while one was half deleted: says so,
+    /// instead of a plain "cancelled" that would hide them.
+    #[error("{}", stopped(.partial.as_deref(), .failed))]
+    Stopped {
+        /// The item being deleted when it stopped, if part of it was already gone.
+        partial: Option<String>,
+        /// Items that failed before it stopped, in order.
+        failed: Vec<ItemFailure>,
+    },
     /// Some items' cloud pin state could not be changed; one "name: reason" line each.
     #[error("{}", cloud_failures(.failed))]
     CloudPin {
@@ -242,6 +251,18 @@ pub(crate) fn items_failed(failed: &[ItemFailure]) -> String {
     text
 }
 
+/// "Stopped before the end. “x” was only partly deleted; … 1 item failed: …".
+fn stopped(partial: Option<&str>, failed: &[ItemFailure]) -> String {
+    let mut parts = vec![t!("fail.stopped").into_owned()];
+    if let Some(name) = partial {
+        parts.push(t!("fail.partly_deleted", name = name).into_owned());
+    }
+    if !failed.is_empty() {
+        parts.push(items_failed(failed));
+    }
+    parts.join(&t!("fail.sentence_gap"))
+}
+
 /// "Copies don't match: a.txt (different content), ..." with at most five names.
 fn verify_failures(failed: &[String]) -> String {
     const SHOWN: usize = 5;
@@ -338,6 +359,10 @@ pub(crate) enum ShellMenuEntry {
         #[serde(with = "icon_wire")]
         icon: Option<arke_core::thumbs::Thumbnail>,
         children: Vec<Self>,
+        /// Set when it was still empty: its extension may fill it only when it is opened, and
+        /// [`Shell::fill_shell_submenu`] reads it by this number then.
+        #[serde(default)]
+        lazy: Option<u32>,
     },
     Separator,
 }
@@ -761,6 +786,33 @@ pub(crate) trait Shell: Send + Sync + 'static {
         let _ = owner;
         false
     }
+    /// How far (physical pixels at `owner`'s DPI, on either side of the press) the pointer moves
+    /// with the button held before it counts as a drag. UI thread.
+    fn drag_threshold(&self, owner: Option<isize>) -> (i32, i32) {
+        let _ = owner;
+        (4, 4)
+    }
+    /// Whether the mouse press being handled came from a touch screen or a pen (Windows turns
+    /// those into mouse messages too). Only meaningful while that press is handled. UI thread.
+    fn press_from_touch(&self) -> bool {
+        false
+    }
+    /// Hands a press that turned into a drag to Windows as a title bar drag, so the window moves
+    /// (with Snap) as if the press had been on the title bar. `at`: the press's point in the
+    /// window's client area, physical pixels. UI thread.
+    fn begin_window_move(&self, owner: Option<isize>, at: (i32, i32)) {
+        let _ = (owner, at);
+    }
+    /// The system's double-click time, and the size of the rectangle (physical pixels at
+    /// `owner`'s DPI, centered on the first click) the second click must land in. UI thread.
+    fn double_click_rule(&self, owner: Option<isize>) -> (std::time::Duration, (i32, i32)) {
+        let _ = owner;
+        (std::time::Duration::from_millis(500), (4, 4))
+    }
+    /// Maximizes `owner`, or restores it if it's maximized (a title bar double click). UI thread.
+    fn toggle_maximize(&self, owner: Option<isize>) {
+        let _ = owner;
+    }
     /// Builds the drag image. `base` is an existing thumbnail; falls back to the system icon. Background thread.
     fn drag_image(
         &self,
@@ -807,13 +859,15 @@ pub(crate) trait Shell: Send + Sync + 'static {
             .collect();
         self.undo(&Undo::PutBack(back), owner)
     }
-    /// Permanently deletes Recycle Bin items. Does not prompt; the caller must confirm first. Background thread.
+    /// Permanently deletes Recycle Bin items (their data and their bin records). Shows no Windows dialogs: the caller
+    /// confirms first, progress goes to `progress` and setting `progress.cancel` stops before the next item. Items that
+    /// fail are reported by name in `ShellError::Items` while the rest are still deleted. Background thread.
     fn recycle_purge(
         &self,
         items: &[RecycledItem],
-        owner: Option<isize>,
+        progress: &OpProgress,
     ) -> Result<OpOutcome, ShellError> {
-        let _ = (items, owner);
+        let _ = (items, progress);
         Err(ShellError::Unsupported)
     }
     /// Puts files on the system clipboard and returns the resulting clipboard sequence number.
@@ -880,6 +934,16 @@ pub(crate) trait Shell: Send + Sync + 'static {
     ) -> Result<(), ShellError>;
     /// Releases the menu object when the menu closes without a choice. Fire and forget; UI thread safe.
     fn release_shell_menu(&self, session: u64);
+    /// Fills and reads a submenu of menu `session` that was empty when the menu was read
+    /// ([`ShellMenuEntry::Submenu`]'s `lazy`), as it is opened. Its items are invoked through
+    /// `session` like the rest. Background thread.
+    fn fill_shell_submenu(
+        &self,
+        _session: u64,
+        _index: u32,
+    ) -> Result<Vec<ShellMenuEntry>, ShellError> {
+        Err(ShellError::Unsupported)
+    }
     /// Context menu extensions that apply to `paths`, or the folder's empty space
     /// (`win_menu_parts.rs`). Background thread.
     fn shell_menu_handlers(

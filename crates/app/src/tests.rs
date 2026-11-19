@@ -21,7 +21,7 @@ use crate::explorer::{
     DeleteFiles, Explorer, ExplorerEvent, FocusFilter, FocusPathBar, FocusSearch, OpenInNewTab,
     Services, StartClock,
 };
-use crate::media::MediaKind;
+use crate::media::{MediaKey, MediaKind};
 use crate::shell::{
     ClipboardFiles, FileOp, KnownFolder, OpOutcome, Place, PlaceKind, Shell, ShellError,
 };
@@ -33,6 +33,8 @@ mod column_view;
 mod folder_views;
 #[path = "tests_idle.rs"]
 mod idle;
+#[path = "tests_lazy_submenus.rs"]
+mod lazy_submenus;
 #[cfg(windows)]
 #[path = "tests_live_recycle.rs"]
 mod live_recycle;
@@ -52,10 +54,18 @@ mod remote;
 mod tabs;
 #[path = "tests_columns.rs"]
 mod tests_columns;
+#[path = "tests_text_input_menu.rs"]
+mod text_input_menu;
+#[path = "tests_top_bar.rs"]
+mod top_bar;
 #[path = "tests_views.rs"]
 mod views;
+#[path = "tests_virtual_drop.rs"]
+mod virtual_drop;
 #[path = "tests_whats_new.rs"]
 mod whats_new;
+#[path = "tests_windows.rs"]
+mod windows;
 
 type OpHook = Box<dyn Fn(&FileOp) + Send + Sync>;
 /// A PDF page render request: path, page, box.
@@ -94,6 +104,13 @@ struct FakeShell {
     >,
     /// Names of the extensions read on their own.
     extensions_read: Mutex<Vec<String>>,
+    /// Submenus added to the end of the whole Windows menu empty, filled only when opened
+    /// (lazy index is the position here): label and what filling it gives.
+    lazy_submenus: Mutex<Vec<(String, Vec<crate::shell::ShellMenuEntry>)>>,
+    /// Lazy submenus filled (session, index).
+    submenus_filled: Mutex<Vec<(u64, u32)>>,
+    /// While set, filling a lazy submenu waits for a message on it.
+    fill_gate: Mutex<Option<flume::Receiver<()>>>,
     clipboard_text: Mutex<Option<String>>,
     revealed: Mutex<Vec<(PathBuf, bool)>>,
     /// Undos that ran.
@@ -101,6 +118,8 @@ struct FakeShell {
     /// Fake recycle bin, plus names that were permanently deleted.
     recycled: Mutex<Vec<crate::shell::RecycledItem>>,
     purged: Mutex<Vec<String>>,
+    /// While set, permanently deleting each Recycle Bin item waits for a message on it.
+    purge_gate: Mutex<Option<flume::Receiver<()>>>,
     /// Files handed to Windows drag and drop (dragged into other apps).
     dragged_out: Mutex<Vec<Vec<PathBuf>>>,
     /// Network connect requests sent by Arke's dialog.
@@ -148,6 +167,16 @@ struct FakeShell {
     quicklook_runs: Mutex<Vec<(Option<PathBuf>, PathBuf)>>,
     /// Files Windows' "Choose another app" dialog was opened for.
     chose_app: Mutex<Vec<PathBuf>>,
+    /// System drag distance (physical pixels); `None` is Windows' default of 4.
+    drag_threshold: Mutex<Option<(i32, i32)>>,
+    /// Title bar drags handed to Windows (press point, physical client pixels).
+    window_moves: Mutex<Vec<(i32, i32)>>,
+    /// System double-click time and rectangle; `None` is 500 ms and 4x4.
+    double_click: Mutex<Option<(Duration, (i32, i32))>>,
+    /// Times the window was maximized or restored by a title bar double click.
+    maximize_toggles: AtomicU32,
+    /// Presses come from a touch screen.
+    touch: std::sync::atomic::AtomicBool,
 }
 
 impl FakeShell {
@@ -353,6 +382,28 @@ impl Shell for FakeShell {
         self.covered.load(Ordering::Relaxed)
     }
 
+    fn drag_threshold(&self, _owner: Option<isize>) -> (i32, i32) {
+        self.drag_threshold.lock().unwrap_or((4, 4))
+    }
+
+    fn press_from_touch(&self) -> bool {
+        self.touch.load(Ordering::Relaxed)
+    }
+
+    fn begin_window_move(&self, _owner: Option<isize>, at: (i32, i32)) {
+        self.window_moves.lock().push(at);
+    }
+
+    fn double_click_rule(&self, _owner: Option<isize>) -> (Duration, (i32, i32)) {
+        self.double_click
+            .lock()
+            .unwrap_or((Duration::from_millis(500), (4, 4)))
+    }
+
+    fn toggle_maximize(&self, _owner: Option<isize>) {
+        self.maximize_toggles.fetch_add(1, Ordering::Relaxed);
+    }
+
     fn drag_image(
         &self,
         base: Option<arke_core::thumbs::Thumbnail>,
@@ -419,17 +470,45 @@ impl Shell for FakeShell {
     fn recycle_purge(
         &self,
         items: &[crate::shell::RecycledItem],
-        _owner: Option<isize>,
+        progress: &crate::shell::OpProgress,
     ) -> Result<OpOutcome, ShellError> {
         assert!(
             !arke_core::fs::is_ui_thread(),
             "recycle_purge called on the UI thread"
         );
-        self.recycled.lock().retain(|kept| !items.contains(kept));
-        self.purged
-            .lock()
-            .extend(items.iter().map(|item| item.name.clone()));
-        Ok(OpOutcome::Done)
+        progress
+            .work_total
+            .store(items.len() as u64, Ordering::Relaxed);
+        let failing = self.fail_delete.lock().clone();
+        let gate = self.purge_gate.lock().clone();
+        let mut failed = Vec::new();
+        for item in items {
+            if let Some(gate) = &gate {
+                let _ = gate.recv_timeout(Duration::from_secs(20));
+            }
+            if progress.cancel.load(Ordering::Relaxed) {
+                return Ok(OpOutcome::Cancelled);
+            }
+            let shown = item.from.join(&item.name);
+            if let Some((_, reason, holders)) = failing.iter().find(|(p, _, _)| *p == shown) {
+                failed.push(crate::shell::ItemFailure {
+                    path: shown,
+                    reason: *reason,
+                    detail: String::new(),
+                    holders: holders.clone(),
+                });
+            } else {
+                self.recycled.lock().retain(|kept| kept != item);
+                self.purged.lock().push(item.name.clone());
+                progress.done.fetch_add(1, Ordering::Relaxed);
+            }
+            progress.work_done.fetch_add(1, Ordering::Relaxed);
+        }
+        if failed.is_empty() {
+            Ok(OpOutcome::Done)
+        } else {
+            Err(ShellError::Items { failed })
+        }
     }
 
     fn set_clipboard_files(&self, files: &ClipboardFiles) -> Result<u32, ShellError> {
@@ -505,28 +584,63 @@ impl Shell for FakeShell {
             icon: None,
         };
         let item = |id, label: &str| verb_item(id, label, None);
+        // "Open" and "Copy" duplicate Arke's own items (matched by verb), so they're dropped
+        // along with the extra separator.
+        let mut entries = vec![
+            verb_item(4, "Open", Some("open")),
+            E::Separator,
+            item(1, "Compress with 7-Zip"),
+            E::Separator,
+            E::Submenu {
+                label: "Send to".into(),
+                enabled: true,
+                icon: None,
+                children: vec![item(2, "Desktop"), item(3, "Mail recipient")],
+                lazy: None,
+            },
+            E::Separator,
+            verb_item(5, "Copy", Some("Copy")),
+        ];
+        entries.extend(
+            self.lazy_submenus
+                .lock()
+                .iter()
+                .enumerate()
+                .map(|(ix, (label, _))| E::Submenu {
+                    label: label.clone(),
+                    enabled: true,
+                    icon: None,
+                    children: Vec::new(),
+                    lazy: u32::try_from(ix).ok(),
+                }),
+        );
         Ok(crate::shell::ShellMenu {
             session: 7 + self
                 .shell_sessions
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-            // "Open" and "Copy" duplicate Arke's own items (matched by verb), so they're dropped
-            // along with
-            // the extra separator.
-            entries: vec![
-                verb_item(4, "Open", Some("open")),
-                E::Separator,
-                item(1, "Compress with 7-Zip"),
-                E::Separator,
-                E::Submenu {
-                    label: "Send to".into(),
-                    enabled: true,
-                    icon: None,
-                    children: vec![item(2, "Desktop"), item(3, "Mail recipient")],
-                },
-                E::Separator,
-                verb_item(5, "Copy", Some("Copy")),
-            ],
+            entries,
         })
+    }
+
+    fn fill_shell_submenu(
+        &self,
+        session: u64,
+        index: u32,
+    ) -> Result<Vec<crate::shell::ShellMenuEntry>, ShellError> {
+        assert!(
+            !arke_core::fs::is_ui_thread(),
+            "submenu filled on the UI thread"
+        );
+        let gate = self.fill_gate.lock().clone();
+        if let Some(gate) = gate {
+            let _ = gate.recv_timeout(Duration::from_secs(20));
+        }
+        self.submenus_filled.lock().push((session, index));
+        self.lazy_submenus
+            .lock()
+            .get(index as usize)
+            .map(|(_, children)| children.clone())
+            .ok_or(ShellError::MenuExpired)
     }
 
     fn invoke_shell_menu(
@@ -1632,6 +1746,35 @@ fn filter_chips_and_content_search(cx: &mut TestAppContext) {
     assert_eq!(lines, ["old invoice 7", "pay the Invoice"]);
 }
 
+/// In a network folder the content search reads several files at once: one slow file doesn't hold
+/// up the others, and matches still show in the folder's order.
+#[gpui::test]
+fn network_content_search_reads_files_at_once(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    let names = ["a.txt", "b.txt", "c.txt", "d.txt"];
+    fs.insert_dir(
+        r"\\nas\share",
+        names.iter().map(|n| file(n, 1)).collect::<Vec<_>>(),
+    );
+    for name in names {
+        fs.set_content(format!(r"\\nas\share\{name}"), b"the invoice\n".to_vec());
+    }
+    fs.hang(r"\\nas\share\a.txt");
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::default(), r"\\nas\share");
+    wait_until(cx, &view, "load", loaded(r"\\nas\share"));
+    cx.dispatch_action(FocusFilter);
+    cx.simulate_input("invoice");
+    cx.update(|window, cx| view.update(cx, |v, cx| v.toggle_contents(window, cx)));
+    wait_until_ticking(cx, &view, "the others are read past the slow one", |v| {
+        view_names(v) == ["b.txt", "c.txt", "d.txt"]
+    });
+    assert!(view.update(cx, |v, _| v.content_searching()));
+    fs.release_all();
+    wait_until_ticking(cx, &view, "the slow one lands in its place", |v| {
+        view_names(v) == names && !v.content_searching()
+    });
+}
+
 /// Content search reads the text inside Word documents and PDFs, in this folder and subfolders.
 #[gpui::test]
 fn content_search_finds_text_inside_documents(cx: &mut TestAppContext) {
@@ -2274,6 +2417,236 @@ fn recycle_bin_page_restores_and_purges(cx: &mut TestAppContext) {
     page.update(cx, |p, cx| p.answer_for_test(true, cx));
     wait_for(cx, "bin not emptied", &[]);
     assert_eq!(*shell.purged.lock(), ["mid.txt", "new.txt"]);
+}
+
+/// A fake bin with `names` (deleted from `C:\o`, newest first in the list), and the open
+/// Recycle Bin page once they are listed.
+fn open_recycle_page<'a>(
+    cx: &'a mut TestAppContext,
+    shell: &Arc<FakeShell>,
+    names: &[&str],
+) -> (
+    Entity<Workspace>,
+    Entity<crate::recycle_bin::RecycleBin>,
+    &'a mut VisualTestContext,
+) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\o", vec![file("a.txt", 1)]);
+    *shell.recycled.lock() = names
+        .iter()
+        .enumerate()
+        .map(|(ix, name)| crate::shell::RecycledItem {
+            now: format!(r"C:\$Recycle.Bin\S-1\$R{name}"),
+            name: (*name).to_owned(),
+            from: PathBuf::from(r"C:\o"),
+            deleted: Some(std::time::UNIX_EPOCH + Duration::from_secs(1000 - ix as u64)),
+            size: 1,
+            is_dir: false,
+        })
+        .collect();
+    let (ws, cx) = setup_workspace_with(cx, fs, Arc::clone(shell), r"C:\o");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "load", loaded(r"C:\o"));
+    cx.update(|window, cx| {
+        ws.update(cx, |ws, cx| ws.open_recycle_for_test(window, cx));
+    });
+    let page = ws
+        .update(cx, |ws, _| ws.recycle_for_test())
+        .expect("page should be open");
+    let want: Vec<String> = names.iter().map(|n| (*n).to_owned()).collect();
+    wait_page(cx, &page, "items not listed", |p, _| {
+        p.items_for_test() == want
+    });
+    (ws, page, cx)
+}
+
+fn wait_page(
+    cx: &mut VisualTestContext,
+    page: &Entity<crate::recycle_bin::RecycleBin>,
+    what: &str,
+    pred: impl Fn(&crate::recycle_bin::RecycleBin, &App) -> bool,
+) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        cx.run_until_parked();
+        if page.update(cx, |p, cx| pred(p, cx)) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "timed out waiting for: {what}");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn click_drawn(cx: &mut VisualTestContext, selector: &'static str) {
+    cx.run_until_parked();
+    let bounds = cx
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("{selector} should be drawn"));
+    cx.simulate_click(bounds.center(), gpui::Modifiers::none());
+    cx.run_until_parked();
+}
+
+/// The permanent-delete job in the operation center: (state, items done, items finished of how
+/// many).
+fn purge_job(cx: &mut VisualTestContext) -> Option<(crate::op_center::JobState, u64, u64, u64)> {
+    cx.update(|_, cx| {
+        crate::op_center::OpCenter::jobs(cx)
+            .iter()
+            .rfind(|job| job.verb == "op.delete_permanently")
+            .map(|job| {
+                (
+                    job.state.clone(),
+                    job.done_items(),
+                    job.progress.work_done.load(Ordering::Relaxed),
+                    job.progress.work_total.load(Ordering::Relaxed),
+                )
+            })
+    })
+}
+
+/// Emptying the bin is Arke's own operation: after Arke's confirmation it runs in the background
+/// with a progress toast and an operation center entry, and Cancel in the toast stops it before
+/// the next item. What was already deleted is gone; the rest stays listed.
+#[gpui::test]
+fn emptying_the_bin_shows_progress_and_can_be_cancelled(cx: &mut TestAppContext) {
+    use crate::op_center::JobState;
+    use crate::recycle_bin::{Job, RecycleBin};
+    let shell = Arc::new(FakeShell::default());
+    let (gate_tx, gate) = flume::unbounded();
+    *shell.purge_gate.lock() = Some(gate);
+    let (_, page, cx) = open_recycle_page(cx, &shell, &["a.txt", "b.txt", "c.txt"]);
+
+    assert!(page.update(cx, |p, cx| p.press_for_test(Job::Purge, true, cx)));
+    page.update(cx, |p, cx| p.answer_for_test(true, cx));
+    cx.run_until_parked();
+    assert!(page.update(cx, |_, cx| RecycleBin::purging_for_test(cx)));
+    assert_eq!(
+        purge_job(cx).map(|(state, ..)| state),
+        Some(JobState::Running)
+    );
+    assert!(cx.debug_bounds("toast-ops-action-0").is_some(), "Cancel");
+
+    // One item goes; the bar moves (1 of 3).
+    gate_tx.send(()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while purge_job(cx).map(|(_, _, done, total)| (done, total)) != Some((1, 3)) {
+        assert!(Instant::now() < deadline, "first item: {:?}", purge_job(cx));
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(*shell.purged.lock(), ["a.txt"]);
+
+    // Cancel: stops before the next item.
+    click_drawn(cx, "toast-ops-action-0");
+    for _ in 0..3 {
+        gate_tx.send(()).unwrap();
+    }
+    wait_page(cx, &page, "stopped", |p, cx| {
+        !RecycleBin::purging_for_test(cx) && p.items_for_test() == ["b.txt", "c.txt"]
+    });
+    assert_eq!(*shell.purged.lock(), ["a.txt"]);
+    assert_eq!(
+        purge_job(cx).map(|(state, ..)| state),
+        Some(JobState::Cancelled)
+    );
+    let cancelled = t!("ops.cancelled", op = t!("op.delete_permanently")).into_owned();
+    assert_eq!(page.update(cx, |p, cx| p.status_for_test(cx)), cancelled);
+    assert!(page.update(cx, |p, _| p.failure_for_test()).is_none());
+    assert!(
+        cx.debug_bounds("toast-ops-action-0").is_none(),
+        "toast gone"
+    );
+}
+
+/// Items that can't be deleted (a file in use) don't stop the others. The error toast names them
+/// and the program holding them, the operation center records the failure, the failed item stays
+/// in the bin, and Close dismisses the toast.
+#[gpui::test]
+fn deleting_from_the_bin_reports_items_that_failed(cx: &mut TestAppContext) {
+    use crate::op_center::JobState;
+    use crate::recycle_bin::{Job, RecycleBin};
+    let shell = Arc::new(FakeShell::default());
+    shell.fail_delete.lock().push((
+        PathBuf::from(r"C:\o\held.docx"),
+        FailReason::InUse,
+        vec![crate::shell::Holder {
+            app: "Microsoft Word".into(),
+            pid: 4242,
+        }],
+    ));
+    let (_, page, cx) = open_recycle_page(cx, &shell, &["a.txt", "held.docx", "c.txt"]);
+
+    page.update(cx, |p, _| {
+        p.select_for_test(&["a.txt", "held.docx", "c.txt"]);
+    });
+    assert!(page.update(cx, |p, cx| p.press_for_test(Job::Purge, false, cx)));
+    page.update(cx, |p, cx| p.answer_for_test(true, cx));
+    wait_page(cx, &page, "deleted the rest", |p, cx| {
+        !RecycleBin::purging_for_test(cx) && p.items_for_test() == ["held.docx"]
+    });
+    assert_eq!(*shell.purged.lock(), ["a.txt", "c.txt"]);
+    let failure = page
+        .update(cx, |p, _| p.failure_for_test())
+        .expect("an error toast");
+    assert!(
+        failure.contains("held.docx") && failure.contains("Microsoft Word"),
+        "{failure}"
+    );
+    assert!(
+        matches!(purge_job(cx), Some((JobState::Failed(why), ..)) if why.contains("held.docx")),
+        "{:?}",
+        purge_job(cx)
+    );
+
+    click_drawn(cx, "recycle-error-action-0");
+    assert!(page.update(cx, |p, _| p.failure_for_test()).is_none());
+    assert!(cx.debug_bounds("recycle-error-action-0").is_none());
+}
+
+/// Closing and reopening the page while the bin empties doesn't forget that it is emptying: the
+/// new page shows it running and can't start emptying the same items again, and it shows what is
+/// left once it ends.
+#[gpui::test]
+fn reopening_the_bin_while_it_empties_keeps_it_busy(cx: &mut TestAppContext) {
+    use crate::recycle_bin::{Job, RecycleBin};
+    let shell = Arc::new(FakeShell::default());
+    let (gate_tx, gate) = flume::unbounded();
+    *shell.purge_gate.lock() = Some(gate);
+    let (ws, page, cx) = open_recycle_page(cx, &shell, &["a.txt", "b.txt"]);
+    assert!(page.update(cx, |p, cx| p.press_for_test(Job::Purge, true, cx)));
+    page.update(cx, |p, cx| p.answer_for_test(true, cx));
+    cx.run_until_parked();
+
+    cx.update(|window, cx| {
+        ws.update(cx, |ws, cx| ws.close_recycle_for_test(window, cx));
+    });
+    cx.run_until_parked();
+    drop(page);
+    cx.update(|window, cx| {
+        ws.update(cx, |ws, cx| ws.open_recycle_for_test(window, cx));
+    });
+    let page = ws
+        .update(cx, |ws, _| ws.recycle_for_test())
+        .expect("page should be open again");
+    wait_page(cx, &page, "listed again", |p, _| {
+        p.items_for_test() == ["a.txt", "b.txt"]
+    });
+    assert!(page.update(cx, |_, cx| RecycleBin::purging_for_test(cx)));
+    assert!(
+        !page.update(cx, |p, cx| p.press_for_test(Job::Purge, true, cx)),
+        "Empty is not offered while emptying"
+    );
+    let purging = t!("recycle.purging").into_owned();
+    assert_eq!(page.update(cx, |p, cx| p.status_for_test(cx)), purging);
+    assert!(cx.debug_bounds("toast-ops-action-0").is_some(), "Cancel");
+
+    for _ in 0..2 {
+        gate_tx.send(()).unwrap();
+    }
+    wait_page(cx, &page, "emptied", |p, cx| {
+        !RecycleBin::purging_for_test(cx) && p.items_for_test().is_empty()
+    });
+    assert_eq!(*shell.purged.lock(), ["a.txt", "b.txt"], "each item once");
 }
 
 /// Waits for the background drag image.
@@ -3744,6 +4117,54 @@ fn going_up_in_a_size_sorted_folder_keeps_the_folder_on_screen(cx: &mut TestAppC
     );
 }
 
+/// Sorting by size before the folder sizes are known: the rows stay where they are while sizes
+/// come in, and the list reorders once, when the last one is known (it used to reorder as each
+/// arrived, so rows kept jumping).
+#[gpui::test]
+fn sorting_by_size_reorders_once_when_sizes_are_done(cx: &mut TestAppContext) {
+    use crate::explorer::FolderSize;
+    let fs = FakeFs::new();
+    let root = Path::new(r"C:\q");
+    fs.insert_dir(
+        root,
+        vec![dir("a-small"), dir("b-big"), dir("c-tiny"), dir("d-mid")],
+    );
+    fs.insert_dir(r"C:\q\a-small", vec![file("x", 10)]);
+    fs.insert_dir(r"C:\q\b-big", vec![file("x", 900)]);
+    fs.insert_dir(r"C:\q\c-tiny", vec![file("x", 1)]);
+    fs.insert_dir(r"C:\q\d-mid", vec![file("x", 300)]);
+    // No size is known when the sort starts; the last folder stays slow after the others.
+    for name in ["a-small", "b-big", "c-tiny", "d-mid"] {
+        fs.hang(format!(r"C:\q\{name}"));
+    }
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::default(), r"C:\q");
+    wait_until(cx, &view, "load", loaded(r"C:\q"));
+    view.update(cx, |v, cx| {
+        v.set_sort(SortSpec::by(SortColumn::Size, false, false), cx);
+    });
+    cx.run_until_parked();
+    let before = view.update(cx, |v, _| names(v));
+    for name in ["a-small", "b-big", "c-tiny"] {
+        fs.release(Path::new(&format!(r"C:\q\{name}")));
+    }
+    let sized = |v: &Explorer, n: &str| matches!(v.folder_size(n), FolderSize::Known { .. });
+    wait_until(cx, &view, "the quick ones", |v| {
+        ["a-small", "b-big", "c-tiny"].iter().all(|n| sized(v, n))
+    });
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(2));
+    cx.run_until_parked();
+    assert_eq!(
+        view.update(cx, |v, _| names(v)),
+        before,
+        "rows keep their places while a size is still coming"
+    );
+    fs.release_all();
+    wait_until(cx, &view, "sorted once all are known", |v| {
+        names(v) == ["b-big", "d-mid", "a-small", "c-tiny"]
+    });
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "One scenario end to end: sizes arrive in the background while the sort is applied"
@@ -3915,6 +4336,158 @@ fn size_order_follows_the_folder_being_shown(cx: &mut TestAppContext) {
     });
 }
 
+/// Windows' type names arrive after the folder was sorted by type: the list is ordered again by
+/// the text the column shows then.
+#[gpui::test]
+fn type_order_follows_names_that_arrive_later(cx: &mut TestAppContext) {
+    rust_i18n::set_locale("en");
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\t", vec![file("b.bak", 1), file("a.dwg", 1)]);
+    let (view, cx) = setup(cx, fs, Arc::default(), r"C:\t");
+    wait_until(cx, &view, "load", loaded(r"C:\t"));
+    view.update(cx, |v, cx| {
+        v.set_sort(SortSpec::by(SortColumn::Type, true, false), cx);
+    });
+    wait_until(cx, &view, "sorted by type", |v| {
+        names(v) == ["b.bak", "a.dwg"]
+    });
+    arke_core::format::set_type_name("dwg", Some("AutoCAD Drawing"));
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while view.update(cx, |v, _| names(v)) != ["a.dwg", "b.bak"] {
+        assert!(Instant::now() < deadline, "not sorted by the new names");
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Type names that arrive while folder sizes are still being computed reorder a list sorted by
+/// type at once: only a sort by size waits for the sizes.
+#[gpui::test]
+fn type_order_does_not_wait_for_folder_sizes(cx: &mut TestAppContext) {
+    rust_i18n::set_locale("en");
+    let fs = FakeFs::new();
+    fs.insert_dir(
+        r"C:\t6",
+        vec![dir("slow"), file("b.bak", 1), file("a.zqw6", 1)],
+    );
+    fs.insert_dir(r"C:\t6\slow", vec![file("x", 1)]);
+    fs.hang(r"C:\t6\slow");
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::default(), r"C:\t6");
+    wait_until(cx, &view, "load", loaded(r"C:\t6"));
+    view.update(cx, |v, cx| {
+        v.set_sort(SortSpec::by(SortColumn::Type, true, false), cx);
+    });
+    let files = |v: &Explorer| {
+        names(v)
+            .into_iter()
+            .filter(|n| n.contains('.'))
+            .collect::<Vec<_>>()
+    };
+    wait_until(cx, &view, "sorted by type", |v| {
+        files(v) == ["b.bak", "a.zqw6"]
+    });
+    wait_until(cx, &view, "a folder size computing", |v| {
+        v.folder_sizes_computing()
+    });
+    arke_core::format::set_type_name("zqw6", Some("Aardvark Document"));
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while view.update(cx, |v, _| files(v)) != ["a.zqw6", "b.bak"] {
+        assert!(Instant::now() < deadline, "waited for the folder size");
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(view.update(cx, |v, _| v.folder_sizes_computing()));
+    fs.release_all();
+}
+
+/// Sorted by size, the folder is relisted (the watcher lost track) while a size is still being
+/// computed: the fresh listing knows no folder sizes, so it is sorted once with the sizes known
+/// so far instead of showing the folders in name order until the last size comes.
+#[gpui::test]
+fn a_relisting_while_sizes_compute_keeps_the_size_order(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    let root = Path::new(r"C:\s6");
+    // Size order is neither name order nor its reverse.
+    fs.insert_dir(root, vec![dir("f0"), dir("f1"), dir("f2"), dir("f3")]);
+    for (name, size) in [("f0", 200), ("f1", 400), ("f2", 100), ("f3", 300)] {
+        fs.insert_dir(root.join(name), vec![file("x", size)]);
+    }
+    let by_size = ["f1", "f3", "f0", "f2"];
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::default(), r"C:\s6");
+    wait_until(cx, &view, "load", loaded(r"C:\s6"));
+    view.update(cx, |v, cx| {
+        v.set_sort(SortSpec::by(SortColumn::Size, false, false), cx);
+    });
+    wait_until(cx, &view, "sized", |v| {
+        !v.folder_sizes_computing() && names(v) == by_size
+    });
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while fs.watcher_count(root) == 0 {
+        assert!(Instant::now() < deadline, "watcher did not start");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // A new folder whose size takes a while.
+    fs.insert_dir(root.join("g"), vec![file("x", 1)]);
+    fs.hang(root.join("g"));
+    fs.emit_changed(root, &["g"]);
+    wait_until(cx, &view, "g computing", |v| {
+        names(v).contains(&"g".to_owned()) && v.folder_sizes_computing()
+    });
+    let generation = view.update(cx, |v, _| v.model.as_ref().map(|m| m.generation));
+    fs.emit(root, &arke_core::fs::WatchEvent::Rescan);
+    wait_until(cx, &view, "relisted", |v| {
+        v.model
+            .as_ref()
+            .is_some_and(|m| Some(m.generation) != generation && m.complete)
+    });
+    cx.run_until_parked();
+    let known: Vec<String> = view.update(cx, |v, _| {
+        names(v).into_iter().filter(|n| n != "g").collect()
+    });
+    assert_eq!(known, by_size);
+    assert!(view.update(cx, |v, _| v.folder_sizes_computing()));
+    fs.release_all();
+}
+
+/// A folder size walk that panics doesn't leave the list waiting forever: that folder is
+/// unknown, the others are computed, and the list is sorted by size.
+#[gpui::test]
+fn a_folder_size_walk_that_panics_still_lets_the_list_sort(cx: &mut TestAppContext) {
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\q6", vec![dir("a-crash"), dir("b-small"), dir("c-big")]);
+    fs.insert_dir(r"C:\q6\a-crash", vec![file("x", 50)]);
+    fs.insert_dir(r"C:\q6\b-small", vec![file("x", 10)]);
+    fs.insert_dir(r"C:\q6\c-big", vec![file("x", 900)]);
+    fs.crash(r"C:\q6\a-crash");
+    let (view, cx) = setup(cx, Arc::clone(&fs), Arc::default(), r"C:\q6");
+    wait_until(cx, &view, "load", loaded(r"C:\q6"));
+    view.update(cx, |v, cx| {
+        v.set_sort(SortSpec::by(SortColumn::Size, false, false), cx);
+    });
+    wait_until(cx, &view, "sorted by the sizes found", |v| {
+        !v.folder_sizes_computing() && names(v)[..2] == ["c-big", "b-small"]
+    });
+    assert_eq!(
+        view.update(cx, |v, _| v.folder_size("a-crash")),
+        crate::explorer::FolderSize::Unknown
+    );
+}
+
+/// Remote folders compare exactly (a server may tell `Docs` from `docs`), local ones ignoring
+/// case and a trailing separator, and a local path is never the same as a remote one.
+#[test]
+fn same_folder_tells_remote_and_local_paths_apart() {
+    use crate::explorer::same_folder;
+    let same = |a: &str, b: &str| same_folder(Path::new(a), Path::new(b));
+    assert!(same(r"C:\Docs", r"c:\docs\"));
+    assert!(same("sftp://u@nas/docs", "sftp://u@nas/docs/"));
+    assert!(!same("sftp://u@nas/Docs", "sftp://u@nas/docs"));
+    assert!(!same(r"C:\docs", "sftp://u@nas/docs"));
+    assert!(!same("sftp://u@nas/docs", r"\\nas\docs"));
+}
+
 #[gpui::test]
 fn marquee_selects_rows(cx: &mut TestAppContext) {
     use gpui::{Modifiers, MouseButton, point, px};
@@ -4076,6 +4649,51 @@ fn unknown_types_get_the_registered_icon(cx: &mut TestAppContext) {
         [PathBuf::from(r"C:\cad\app.exe")],
         "no file icon on the share"
     );
+}
+
+/// A type whose registered icon is the file itself (`DefaultIcon` `%1`) has no icon by extension
+/// (Windows gives the blank document), so each file is asked for its own, like `.ico`. Other
+/// unknown types keep one shared icon per extension. The registry is read off the UI thread, so
+/// until the answer is in the type icon stays; an online-only cloud file is never read.
+#[test]
+fn per_file_icon_types_are_asked_per_file() {
+    let dir = Path::new(r"C:\cad");
+    let (tx, rx) = flume::unbounded::<()>();
+    let caller = std::thread::current().id();
+    crate::media::start_icon_probe(
+        move |ext| {
+            assert_ne!(
+                std::thread::current().id(),
+                caller,
+                "read on the asking thread"
+            );
+            (ext == "dwf").then(|| "\"%1\"".to_owned())
+        },
+        move || {
+            let _ = tx.send(());
+        },
+    );
+    let key = |name: &str, attributes: u32| {
+        let entry = Entry::new(name, EntryKind::File, 10, None, attributes);
+        MediaKey::sized(dir, &entry, None).unwrap()
+    };
+    assert_eq!(
+        key("plan.dwf", 0).path,
+        PathBuf::from("*.dwf"),
+        "not known yet"
+    );
+    rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    let per_file = key("plan.dwf", 0);
+    assert_eq!(per_file.path, PathBuf::from(r"C:\cad\plan.dwf"));
+    assert_eq!(per_file.kind, MediaKind::SystemIcon);
+    assert_eq!(key("plan.dwg", 0).path, PathBuf::from("*.dwg"));
+    // Online-only (recall on data access): reading it would download it, so the type icon.
+    assert_eq!(key("plan.dwf", 0x40_0000).path, PathBuf::from("*.dwf"));
+    let online = Entry::new("plan.dwf", EntryKind::File, 10, None, 0x40_0000);
+    assert!(MediaKey::type_icon(&online).is_some());
+    // No type icon to show where file icons aren't loaded (network shares): the theme icon stays.
+    assert!(MediaKey::type_icon(&file("plan.dwf", 10)).is_none());
+    assert!(MediaKey::type_icon(&file("plan.dwg", 10)).is_some());
 }
 
 /// Grid view: thumbnails for local images, system icons only for .exe. One hung image doesn't
@@ -5338,6 +5956,70 @@ fn ctrl_k_searches_the_whole_computer(cx: &mut TestAppContext) {
 
 /// Whole-PC search: network locations added by the user have their own index, and their results
 /// merge with local ones. Removing a location drops its results.
+/// Searching file contents below a network location that "this PC" search indexes takes the files
+/// from its index: the share isn't walked again, only the files that qualify are read.
+#[gpui::test]
+fn content_search_on_an_indexed_share_uses_the_index(cx: &mut TestAppContext) {
+    use crate::global_search::{GlobalSearch, Roots};
+    let fs = FakeFs::new();
+    fs.insert_dir(r"C:\", vec![]);
+    fs.insert_dir(r"\\nas\share", vec![dir("team")]);
+    fs.insert_dir(
+        r"\\nas\share\team",
+        vec![file("memo.txt", 1), file("todo.txt", 1)],
+    );
+    fs.set_content(r"\\nas\share\team\memo.txt", b"pay the invoice\n".to_vec());
+    fs.set_content(r"\\nas\share\team\todo.txt", b"nothing\n".to_vec());
+    let shell = Arc::new(FakeShell::default());
+    let (ws, cx) = setup_workspace_with(cx, Arc::clone(&fs), Arc::clone(&shell), r"\\nas\share");
+    let view = ws.update(cx, |ws, _| ws.active_view().clone());
+    wait_until(cx, &view, "load", loaded(r"\\nas\share"));
+    let global = cx.update(|_, cx| {
+        GlobalSearch::init(
+            Arc::clone(&fs) as Arc<dyn arke_core::Fs>,
+            Arc::clone(&shell) as Arc<dyn crate::shell::Shell>,
+            Roots::Fixed(vec![PathBuf::from(r"C:\")]),
+            None,
+            cx,
+        )
+    });
+    cx.update(|_, cx| {
+        crate::settings::SettingsStore::global(cx).update(cx, |s, cx| {
+            s.update(
+                |st| {
+                    st.global_search = true;
+                    st.search_network = vec![PathBuf::from(r"\\nas\share")];
+                },
+                cx,
+            );
+        });
+    });
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !global.update(cx, |g, _| {
+        g.net
+            .iter()
+            .any(|n| n.status.count == Some(4) && n.status.scanning.is_none())
+    }) {
+        assert!(Instant::now() < deadline, "network index not built");
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let listed = fs.read_dir_calls();
+    cx.dispatch_action(FocusFilter);
+    cx.simulate_input("invoice");
+    cx.update(|window, cx| {
+        view.update(cx, |v, cx| {
+            v.toggle_contents(window, cx);
+            v.set_scope(crate::explorer::scope::Scope::Subfolders, cx);
+            v.keep_filter_focus(window, cx);
+        });
+    });
+    wait_until_ticking(cx, &view, "content match from the index", |v| {
+        final_hits(v) == [r"team\memo.txt"]
+    });
+    assert_eq!(fs.read_dir_calls(), listed, "the share wasn't walked again");
+}
+
 #[gpui::test]
 fn whole_computer_search_includes_chosen_network_locations(cx: &mut TestAppContext) {
     use crate::explorer::scope::Scope;
