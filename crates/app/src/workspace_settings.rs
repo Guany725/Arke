@@ -3894,10 +3894,8 @@ fn handheld_binding_rows(s: &Settings, ui: &Ui) -> Vec<AnyElement> {
     let options: Vec<_> = HandheldAction::ALL
         .iter()
         .map(|(action, key)| {
-            (
-                *action,
-                Cow::Owned(t!(&format!("handheld.action.{key}")).into_owned()),
-            )
+            let translation_key = format!("handheld.action.{key}");
+            (*action, Cow::Owned(t!(&translation_key).into_owned()))
         })
         .collect();
     let mut rows: Vec<_> = CONTROLS
